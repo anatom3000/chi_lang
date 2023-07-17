@@ -166,7 +166,7 @@ impl Parser {
     }
 
     fn primary(&mut self) -> Option<Expression> {
-        Some(match self.current_token() {
+        let mut expr = match self.current_token() {
             None => {
                 self.errors.push(ParserError::Expected {
                     rule: "expression",
@@ -179,7 +179,7 @@ impl Parser {
                 match token {
                     TokenData::Integer(value, signed_and_size) => Expression::Literal(self.integer(value, signed_and_size)),
                     TokenData::Float(value, size) => Expression::Literal(Literal::Float { value: value, size: size }),
-                    TokenData::Identifier(name) => self.identifier_or_function_call(name)?,
+                    TokenData::Identifier(name) => self.identifier_primary(name)?,
                     TokenData::String(content) => {
                         Expression::Literal(ast::Literal::String(content))
                     }
@@ -215,10 +215,32 @@ impl Parser {
                     }
                 }
             }
-        })
+        };
+
+        loop {
+            match self.current_token() {
+                Some(TokenData::Dot) => {
+                    self.current += 1;
+                    match self.current_token() {
+                        Some(TokenData::Identifier(member)) => {
+                            expr = Expression::StructMember { instance: Box::new(expr), member }
+                        },
+                        _ => {
+                            self.errors.push(ParserError::Expected {
+                                rule: "identifier after `.`",
+                                found: self.full_current_token(),
+                            });
+                            return None;
+                        }
+                    }
+                },
+                _ => break
+            }
+        }
+        Some(expr)
     }
 
-    fn identifier_or_function_call(&mut self, name: String) -> Option<Expression> {
+    fn identifier_primary(&mut self, name: String) -> Option<Expression> {
         Some(match self.current_token() {
             Some(TokenData::LeftParen) => {
                 self.current += 1;
@@ -227,7 +249,7 @@ impl Parser {
                     function: name,
                     arguments: args,
                 }
-            }
+            },
             _ => Expression::Variable(name),
         })
     }

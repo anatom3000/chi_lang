@@ -53,6 +53,14 @@ pub enum AnalysisError {
         found: usize,
         expected: &'static [usize]
     },
+    MemberAccessOnNonStruct {
+        instance_type: Type,
+        member: String
+    },
+    MemberNotFound {
+        instance_type: Type,
+        member: String
+    }
 }
 
 
@@ -166,6 +174,10 @@ pub(crate) enum ExpressionData {
         // TODO: namespaces
         function: String,
         arguments: Vec<Expression>,
+    },
+    StructMember {
+        instance: Box<Expression>,
+        member: String
     },
     Variable(String),
     Literal(Literal),
@@ -572,6 +584,24 @@ impl FunctionScope {
                 }),
                 None => Err(AnalysisError::UnknownVariable(name)),
             },
+            ast::Expression::StructMember { instance, member } => {
+                let instance = self.type_expression(module, *instance)?;
+
+                match instance.type_.clone() {
+                    Type::Identifier(ty) => match module.get_type(&ty)?.kind.clone() {
+                        TypeKind::Struct { members } => {
+                            // get the type of the member if it exists, otherwise return an error
+                            let member_type = members.iter()
+                                .find(|(m, _)| m.as_ref() == member)
+                                .ok_or(AnalysisError::MemberNotFound { instance_type: instance.type_.clone(), member: member.clone() })?.1.clone();
+
+                            Ok(Expression { data: ExpressionData::StructMember { instance: Box::new(instance), member }, type_: member_type })
+                        },
+                        _ => Err(AnalysisError::MemberAccessOnNonStruct { instance_type: instance.type_, member })
+                    },
+                    _ => todo!("member access for reference types")
+                }
+            },
             ast::Expression::Literal(lit) => module.type_literal(lit)
         }
     }
@@ -772,173 +802,7 @@ impl ModuleScope {
     }
 
     fn type_expression(&self, expression: ast::Expression) -> Result<Expression, AnalysisError> {
-        match expression {
-            ast::Expression::Binary {
-                left,
-                operator,
-                right,
-            } => {
-                let left = self.type_expression(*left)?;
-                let right = self.type_expression(*right)?;
-
-                use crate::lexer::TokenData;
-                let operator = match operator {
-                    TokenData::Plus => BinaryOperator::Plus,
-                    TokenData::Minus => BinaryOperator::Minus,
-                    TokenData::Star => BinaryOperator::Mul,
-                    TokenData::Slash => BinaryOperator::Div,
-                    TokenData::Equal => BinaryOperator::Equal,
-                    TokenData::NotEqual => BinaryOperator::NotEqual,
-                    TokenData::Greater => BinaryOperator::Greater,
-                    TokenData::GreatorOrEqual => BinaryOperator::GreaterOrEqual,
-                    TokenData::Lesser => BinaryOperator::Lesser,
-                    TokenData::LesserOrEqual => BinaryOperator::LesserOrEqual,
-                    other => return Err(AnalysisError::UnknownBinaryOperator(other)),
-                };
-
-                let ltype = left.type_.clone();
-                let rtype = right.type_.clone();
-                if ltype == rtype {
-                    Ok(Expression {
-                        data: ExpressionData::Binary {
-                            left: Box::new(left),
-                            operator,
-                            right: Box::new(right),
-                        },
-                        type_: ltype,
-                    })
-                } else {
-                    Err(AnalysisError::UnsupportedBinaryOperation {
-                        op: operator,
-                        left: ltype,
-                        right: rtype,
-                    })
-                }
-            }
-            ast::Expression::Unary { operator, argument } => {
-                let argument = self.type_expression(*argument)?;
-                let atype = argument.type_.clone();
-
-                use crate::lexer::TokenData;
-                match operator {
-                    TokenData::Plus => Ok(Expression {
-                        type_: atype,
-                        data: ExpressionData::Unary {
-                            operator: UnaryOperator::Plus,
-                            argument: Box::new(argument),
-                        },
-                    }),
-                    TokenData::Minus => Ok(Expression {
-                        type_: atype,
-                        data: ExpressionData::Unary {
-                            operator: UnaryOperator::Minus,
-                            argument: Box::new(argument),
-                        },
-                    }),
-                    TokenData::Not => {
-                        if atype == Type::Identifier("bool".to_string()) {
-                            Ok(Expression {
-                                type_: atype,
-                                data: ExpressionData::Unary {
-                                    operator: UnaryOperator::Not,
-                                    argument: Box::new(argument),
-                                },
-                            })
-                        } else {
-                            Err(AnalysisError::UnsupportedUnaryOperation {
-                                op: UnaryOperator::Not,
-                                argument: atype,
-                            })
-                        }
-                    }
-                    other => Err(AnalysisError::UnknownUnaryOperator(other)),
-                }
-            }
-            ast::Expression::ParenBlock(inner) => {
-                let inner = self.type_expression(*inner)?;
-                let type_ = inner.type_.clone();
-                Ok(Expression {
-                    data: ExpressionData::ParenBlock(Box::new(inner)),
-                    type_,
-                })
-            }
-            ast::Expression::FunctionCall {
-                function: function_name,
-                arguments,
-            } => {
-                let function = match self.get_function(&function_name) {
-                    Some(func) => func.clone(),
-                    None => return Err(AnalysisError::UnknownFunction(function_name)),
-                };
-
-                let mut typed_args = vec![];
-                if function.is_variadic {
-                    if function.arguments.len() > arguments.len() {
-                        return Err(AnalysisError::WrongArgumentCount {
-                            function: function_name,
-                            expected: function.arguments.len(),
-                            found: arguments.len(),
-                        });
-                    }
-
-                    for (index, found) in arguments.into_iter().enumerate() {
-                        let found = self.type_expression(found)?;
-
-                        match function.arguments.get(index) {
-                            Some(expected) => {
-                                if expected.1 == found.type_ {
-                                    typed_args.push(found)
-                                } else {
-                                    return Err(AnalysisError::WrongArgumentType {
-                                        function: function_name,
-                                        expected: expected.1.clone(),
-                                        found: found.type_,
-                                    });
-                                }
-                            }
-                            None => typed_args.push(found),
-                        }
-                    }
-                } else {
-                    if function.arguments.len() != arguments.len() {
-                        return Err(AnalysisError::WrongArgumentCount {
-                            function: function_name,
-                            expected: function.arguments.len(),
-                            found: arguments.len(),
-                        });
-                    }
-
-                    for (expected, found) in std::iter::zip(function.arguments.iter(), arguments) {
-                        let found = self.type_expression(found)?;
-                        if expected.1 == found.type_ {
-                            typed_args.push(found)
-                        } else {
-                            return Err(AnalysisError::WrongArgumentType {
-                                function: function_name,
-                                expected: expected.1.clone(),
-                                found: found.type_,
-                            });
-                        }
-                    }
-                }
-
-                Ok(Expression {
-                    data: ExpressionData::FunctionCall {
-                        function: function_name,
-                        arguments: typed_args,
-                    },
-                    type_: function.return_type,
-                })
-            }
-            ast::Expression::Variable(name) => match self.get_variable(&name) {
-                Some(var) => Ok(Expression {
-                    data: ExpressionData::Variable(name),
-                    type_: var.type_.clone(),
-                }),
-                None => Err(AnalysisError::UnknownVariable(name)),
-            },
-            ast::Expression::Literal(lit) => self.type_literal(lit)
-        }
+        FunctionScope::new(vec![], self, FunctionHead { return_type: Type::Void, arguments: vec![], is_variadic: false }).type_expression(self, expression)
     }
 
     fn analyse_new_type(&self, ty: ast::Type) -> Type {

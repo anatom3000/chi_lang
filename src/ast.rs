@@ -34,6 +34,10 @@ pub enum Expression {
         function: String,
         arguments: Vec<Expression>,
     },
+    StructMember {
+        instance: Box<Expression>,
+        member: String
+    },
     Variable(String),
     Literal(Literal),
 }

@@ -59,6 +59,7 @@ def main() {
     let message = "Hello, World!"
 
     message = "the message is actually: Hello, Chi!"
+    let member = what.does_not_exist
     // this won't compile: (type error)
     // message = 42
 

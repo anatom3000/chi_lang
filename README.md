@@ -51,6 +51,8 @@ unary = ("not" | "+" | "-") unary
 primary = INTEGER
         | FLOAT
         | function_call
+        | struct_member
+        | struct_init
         | IDENTIFIER
         | STRING
         | "true"
@@ -59,6 +61,8 @@ primary = INTEGER
         | "(" expression ")"
 
 function_call = IDENTIFIER "(" ( expression "," )* ")"
+struct_member = primary "." IDENTIFIER
+struct_init = IDENTIFIER "{" ( IDENTIFIER ":" expression "," )* "}"
 
 (* type *)
 type = IDENTIFIER

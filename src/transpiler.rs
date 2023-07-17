@@ -241,6 +241,7 @@ impl Transpiler {
                 format!("{operator}{}", self.transpile_expression(argument.data))
             }
             ExpressionData::Variable(name) => name,
+            ExpressionData::StructMember { instance, member } => format!("{}.{}", self.transpile_expression(instance.data), member)
         }
     }
 
