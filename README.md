@@ -1,4 +1,4 @@
-# The Chi programming language
+# The χ (chi) programming language
 
 ### Syntax
 
