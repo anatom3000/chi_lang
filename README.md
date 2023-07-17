@@ -17,15 +17,15 @@ statement = def_stmt
           | assign_stmt
           | expression
 
-// module level statements
+(* module level statements *)
 def_stmt = "def" function_head "{" function_body
 struct_stmt = "struct" IDENTIFIER "{" ( IDENTIFIER ":" type "," )* "}"
 extern_stmt = "extern" STRING "{" extern_body
 
-// let statements can be used at both the module and function level 
+(* let statements can be used at both the module and function level *)
 let_stmt = "let" IDENTIFIER "=" expression
 
-// function level statements
+(* function level statements *)
 if_stmt = "if" expression "{" function_body
     ( "elif" expression "{" function_body )* 
     ( "else" "{" function_body )?
@@ -38,7 +38,7 @@ function_body = statement_list* "}"
 extern_body = "\n"* ( "def" function_head "\n"+ )*
 function_head = IDENTIFIER "(" ( IDENTIFIER ":" type "," )* "..."? ")" ("->" type)?
 
-// expressions
+(* expressions *)
 expression = equality
 equality = comparison ( ("==" | "!=") comparison)*
 comparison = term ( (">" | "<" | ">=" | "<=") term )*
@@ -60,7 +60,7 @@ primary = INTEGER
 
 function_call = IDENTIFIER "(" ( expression "," )* ")"
 
-// type
+(* type *)
 type = IDENTIFIER
      | "&" type
      | "(" type ")"
