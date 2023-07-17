@@ -1,0 +1,79 @@
+extern "<stdio.h>" {
+    def printf(fmt_str: &char, ...)
+}
+
+extern "raylib.h" {
+    def GetScreenWidth() -> int
+    def GetScreenHeight() -> int
+}
+
+struct Point {
+    x: int,
+    y: int
+}
+
+struct Line {
+    start: Point,
+    end: Point
+}
+
+def myveryrealfunction(a_pointer: &int, ptr_to_ptr: &&int, more_pointers: &&&&&&&void) {
+    // ...
+}
+
+def do_nothing() {
+    // ...
+}
+
+def add(a: int, b: int) -> int {
+    if a > b {
+        // newlines are meaningful
+        let my_variable = (a
+        +b)
+        // escaping a newline makes the lexer ignore all newlines until a semicolon is found
+        let very_long = a * b \
+            + a
+            + b
+            // lets add an extra one for flavor 
+            + 1;
+        // new statement since previous one was ended by a semicolon
+        // newlines are meaningful again
+        +b
+        let another = "my"
+
+    } elif b == a {
+        printf("maybe")
+    } elif a <= b {
+        printf("BUG: my_variable (%i) does not exist but analysis says it does --> ", my_variable)
+    } else {
+        printf("yikes")
+    }
+
+    // lets pretend we have a return keyword:
+    return a + b
+}
+
+def main() {
+    let what = false
+
+    let message = "Hello, World!"
+
+    message = "the message is actually: Hello, Chi!"
+    // this won't compile: (type error)
+    // message = 42
+
+    printf("Hello, World!")
+    printf("Guess what? 2 + 2 = %i", add(2, 2))
+    printf("%s, %s, %s, %s", "A", "B", "C", "D")
+
+    let pi = 3.14
+    let pi_but_less_precise = 3.14f32
+    let pi_but_more_precise = 3.14f128
+
+    let world_is_dying = true
+    while world_is_dying {
+        printf("nooooooooooo")
+    }
+
+    printf("Window size is (%i, %i)", GetScreenWidth(), GetScreenHeight())
+}

@@ -1,0 +1,7 @@
+def myfunk() {
+    otherfunk()
+}
+
+def otherfunk() {
+    myfunk()
+}
