@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt::Display;
 
 use crate::ast::{self, Expression, Statement, Type, Literal};
@@ -45,6 +46,7 @@ pub struct Parser {
     pub tokens: Vec<Token>,
     pub errors: Vec<ParserError>,
     current: usize,
+    no_struct_init: bool
 }
 
 macro_rules! binary_operator {
@@ -79,6 +81,7 @@ impl Parser {
         Parser {
             tokens: lexed.tokens,
             current: 0,
+            no_struct_init: false,
             errors: lexed
                 .errors
                 .iter()
@@ -223,6 +226,7 @@ impl Parser {
                     self.current += 1;
                     match self.current_token() {
                         Some(TokenData::Identifier(member)) => {
+                            self.current += 1;
                             expr = Expression::StructMember { instance: Box::new(expr), member }
                         },
                         _ => {
@@ -250,6 +254,60 @@ impl Parser {
                     arguments: args,
                 }
             },
+            Some(TokenData::LeftBrace) if !self.no_struct_init => {
+                self.current += 1;
+
+                let mut members = HashMap::new();
+                loop {
+                    match self.current_token_no_whitespace() {
+                        Some(TokenData::RightBrace) => {
+                            self.current += 1;
+                            break
+                        },
+                        Some(TokenData::Identifier(m_name)) => {
+                            self.current += 1;
+                            match self.current_token() {
+                                Some(TokenData::Colon) => {
+                                    self.current += 1;
+                                    members.insert(m_name, self.expression()?);
+                                    match self.current_token_no_whitespace() {
+                                        Some(TokenData::Comma) => self.current += 1,
+                                        Some(TokenData::RightBrace) => {
+                                            self.current += 1;
+                                            break
+                                        },
+                                        _ => {
+                                            self.errors.push(ParserError::Expected {
+                                                rule: "'}' (end of struct initialization) or ',' (member seperator)",
+                                                found: self.full_current_token(),
+                                            });
+                                            return None;
+                                        }
+                                    }
+                        
+                                },
+                                _ => {
+                                    self.errors.push(ParserError::Expected {
+                                        rule: "`:` after member name in struct initialization",
+                                        found: self.full_current_token(),
+                                    });
+                                    return None;
+                                }
+                            }
+                        }
+                        _ => {
+                            self.errors.push(ParserError::Expected {
+                                rule: "member name or `}` in struct initialization",
+                                found: self.full_current_token(),
+                            });
+                            return None;
+                        }
+                    }
+                }
+
+                Expression::StructInit { name, members }
+            },
+
             _ => Expression::Variable(name),
         })
     }
@@ -410,24 +468,31 @@ impl Parser {
 
         // handle starting newlines or semicolons
         'consume_separator: loop {
-            match self.current_token_no_whitespace() {
+            match self.current_token() {
+                Some(TokenData::NewLine) => self.current += 1,
                 Some(TokenData::Semicolon) => self.current += 1,
                 _ => break 'consume_separator,
             }
         }
 
         while self.current_token().is_some() {
-            statements.push(self.statement()?);
+            let stmt = self.statement()?;
+
+            // dbg!(&stmt);
+            // dbg!(self.current_token_no_whitespace());
+            // panic!();
+
+            statements.push(stmt);
 
             let mut first = true;
             'consume_separator: loop {
-                match self.current_token_no_whitespace() {
-                    Some(TokenData::Semicolon) => self.current += 1,
+                match self.current_token() {
+                    Some(TokenData::NewLine) => self.current += 1,
                     None => return Some(statements),
                     _ => {
                         if first {
                             self.errors.push(ParserError::Expected {
-                                rule: "new line or ';'",
+                                rule: "new line or `;` (module)",
                                 found: self.full_current_token(),
                             })
                         } else {
@@ -621,7 +686,8 @@ impl Parser {
 
             let mut first = true;
             'consume_separator: loop {
-                match self.current_token_no_whitespace() {
+                match self.current_token() {
+                    Some(TokenData::NewLine) => self.current += 1,
                     Some(TokenData::RightBrace) => {
                         self.current += 1;
                         return Some(statements);
@@ -764,7 +830,8 @@ impl Parser {
 
             let mut first = true;
             'consume_separator: loop {
-                match self.current_token_no_whitespace() {
+                match self.current_token() {
+                    Some(TokenData::NewLine) => self.current += 1,
                     Some(TokenData::Semicolon) => self.current += 1,
                     Some(TokenData::RightBrace) => {
                         self.current += 1;
@@ -774,7 +841,7 @@ impl Parser {
                     _ => {
                         if first {
                             self.errors.push(ParserError::Expected {
-                                rule: "new line or ';'",
+                                rule: "new line or `;` (function)",
                                 found: self.full_current_token(),
                             })
                         } else {
@@ -814,7 +881,7 @@ impl Parser {
             }
         }
 
-        let mut members = vec![];
+        let mut members = HashMap::new();
 
         loop {
             match self.current_token_no_whitespace() {
@@ -823,7 +890,7 @@ impl Parser {
                     match self.current_token() {
                         Some(TokenData::Colon) => {
                             self.current += 1;
-                            members.push((name, self.type_()?));
+                            members.insert(name, self.type_()?);
                             match self.current_token_no_whitespace() {
                                 Some(TokenData::RightBrace) => {
                                     self.current += 1;
@@ -865,9 +932,12 @@ impl Parser {
     }
 
     fn if_stmt(&mut self) -> Option<Statement> {
+
         let mut conditions_and_bodies = vec![];
 
+        self.no_struct_init = true;
         let condition = self.expression()?;
+        self.no_struct_init = false;
 
         let body = match self.current_token_no_whitespace() {
             Some(TokenData::LeftBrace) => {
@@ -890,7 +960,11 @@ impl Parser {
             match self.current_token_no_whitespace() {
                 Some(TokenData::Elif) => {
                     self.current += 1;
+
+                    self.no_struct_init = true;
                     let condition = self.expression()?;
+                    self.no_struct_init = false;
+            
                     match self.current_token_no_whitespace() {
                         Some(TokenData::LeftBrace) => {
                             self.current += 1;
@@ -933,7 +1007,10 @@ impl Parser {
     }
 
     fn while_stmt(&mut self) -> Option<Statement> {
+
+        self.no_struct_init = true;
         let condition = self.expression()?;
+        self.no_struct_init = false;
         
         let body = match self.current_token_no_whitespace() {
             Some(TokenData::LeftBrace) => {

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::lexer::TokenData;
 
 #[derive(Debug, Clone)]
@@ -37,6 +39,10 @@ pub enum Expression {
     StructMember {
         instance: Box<Expression>,
         member: String
+    },
+    StructInit {
+        name: String,
+        members: HashMap<String, Expression>
     },
     Variable(String),
     Literal(Literal),
@@ -81,7 +87,7 @@ pub enum Statement {
     },
     StructDeclaration {
         name: String,
-        members: Vec<(String, Type)> // member order is preserved
+        members: HashMap<String, Type>
     },
     ExternFunctionDeclaration {
         name: String,

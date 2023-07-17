@@ -8,8 +8,8 @@ extern "raylib.h" {
 }
 
 struct Point {
-    x: int,
-    y: int
+    x: float,
+    y: float,
 }
 
 struct Line {
@@ -57,24 +57,35 @@ def main() {
     let what = false
 
     let message = "Hello, World!"
-
     message = "the message is actually: Hello, Chi!"
-    let member = what.does_not_exist
     // this won't compile: (type error)
     // message = 42
 
-    printf("Hello, World!")
-    printf("Guess what? 2 + 2 = %i", add(2, 2))
-    printf("%s, %s, %s, %s", "A", "B", "C", "D")
 
+    // float literals
     let pi = 3.14
     let pi_but_less_precise = 3.14f32
     let pi_but_more_precise = 3.14f128
 
+    // while loops
     let world_is_dying = true
     while world_is_dying {
         printf("nooooooooooo")
     }
 
+    // structs
+    let origin = Point {
+        x: 0.0,
+        y: 0.0
+    }
+    
+    printf("The origin is at (%f, %f)", origin.x, origin.y)
+
+    // we can use the C standard library
+    printf("Hello, World!")
+    printf("Guess what? 2 + 2 = %i", add(2, 2))
+    printf("%s, %s, %s, %s", "A", "B", "C", "D")
+
+    // other libraries too!
     printf("Window size is (%i, %i)", GetScreenWidth(), GetScreenHeight())
 }

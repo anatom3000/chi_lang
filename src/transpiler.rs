@@ -241,7 +241,15 @@ impl Transpiler {
                 format!("{operator}{}", self.transpile_expression(argument.data))
             }
             ExpressionData::Variable(name) => name,
-            ExpressionData::StructMember { instance, member } => format!("{}.{}", self.transpile_expression(instance.data), member)
+            ExpressionData::StructMember { instance, member } => format!("{}.{}", self.transpile_expression(instance.data), member),
+            ExpressionData::StructInit { name, members } => {
+                let members = members.into_iter()
+                .map(|(m_name, m_value)| format!(".{m_name} = {}", self.transpile_expression(m_value.data)))
+                .collect::<Vec<_>>()
+                .join(", ");
+
+                format!("({name}) {{ {members} }}")
+            }
         }
     }
 

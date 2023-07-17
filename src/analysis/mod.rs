@@ -57,9 +57,20 @@ pub enum AnalysisError {
         instance_type: Type,
         member: String
     },
-    MemberNotFound {
+    UnknownMember {
         instance_type: Type,
         member: String
+    },
+    DuplicateStructMember {
+        struct_name: String,
+        duplicated_member: String
+    },
+    NotStructInit {
+        found: Type
+    },
+    MissingMemberInInit {
+        struct_name: String,
+        missing: String
     }
 }
 
@@ -179,6 +190,10 @@ pub(crate) enum ExpressionData {
         instance: Box<Expression>,
         member: String
     },
+    StructInit {
+        name: String,
+        members: HashMap<String, Expression>
+    },
     Variable(String),
     Literal(Literal),
 }
@@ -205,7 +220,7 @@ pub(crate) struct FunctionHead {
 pub enum TypeKind {
     Primitive,
     Struct {
-        members: Vec<(String, Type)>
+        members: HashMap<String, Type>
     }
 }
 
@@ -591,9 +606,8 @@ impl FunctionScope {
                     Type::Identifier(ty) => match module.get_type(&ty)?.kind.clone() {
                         TypeKind::Struct { members } => {
                             // get the type of the member if it exists, otherwise return an error
-                            let member_type = members.iter()
-                                .find(|(m, _)| m.as_ref() == member)
-                                .ok_or(AnalysisError::MemberNotFound { instance_type: instance.type_.clone(), member: member.clone() })?.1.clone();
+                            let member_type = members.get(&member)
+                                .ok_or(AnalysisError::UnknownMember { instance_type: instance.type_.clone(), member: member.clone() })?.clone();
 
                             Ok(Expression { data: ExpressionData::StructMember { instance: Box::new(instance), member }, type_: member_type })
                         },
@@ -602,6 +616,40 @@ impl FunctionScope {
                     _ => todo!("member access for reference types")
                 }
             },
+            ast::Expression::StructInit { name, mut members } => {
+                match module.get_type(&name)?.kind.clone() {
+                    TypeKind::Struct { members: decl_members } => {
+                        let mut typed_members = HashMap::new();
+
+                        for (m_name, m_type) in decl_members {
+                            let value = members.get(&m_name)
+                                .ok_or(AnalysisError::MissingMemberInInit { struct_name: name.clone(), missing: m_name.clone() })?.clone();
+                            let value = self.type_expression(module, value)?;
+
+                            if value.type_ != m_type {
+                                return Err(AnalysisError::UnexpectedType { expected: m_type, found: value.type_ })
+                            }
+
+                            members.remove(&m_name);
+
+                            typed_members.insert(m_name, value);
+                        }
+
+                        if !members.is_empty() {
+                            return Err(AnalysisError::UnknownMember { 
+                                instance_type: Type::Identifier(name), 
+                                member: members.into_keys().next().expect("members is not empty") 
+                            })
+                        }
+
+                        Ok(Expression { 
+                            data: ExpressionData::StructInit { name: name.clone(), members: typed_members }, 
+                            type_: Type::Identifier(name)
+                        })
+                    },
+                    _ => Err(AnalysisError::NotStructInit { found: Type::Identifier(name) })
+                }
+            }
             ast::Expression::Literal(lit) => module.type_literal(lit)
         }
     }
@@ -718,9 +766,12 @@ impl ModuleScope {
                     });
                 },
                 ast::Statement::StructDeclaration { name, members } => {
-                    let mut typed_members = vec![];
-                    for (name, ty) in members {
-                        typed_members.push((name, self.analyse_type(ty)?))
+                    let mut typed_members = HashMap::new();
+                    for (m_name, m_type) in members {
+                        if typed_members.contains_key(&m_name) {
+                            return Err(AnalysisError::DuplicateStructMember { struct_name: name, duplicated_member: m_name })
+                        }
+                        typed_members.insert(m_name, self.analyse_type(m_type)?);
                     }
 
                     self.types.insert(name.clone(), TypeDefinition { 
