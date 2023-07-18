@@ -120,6 +120,8 @@ pub enum UnaryOperator {
     Not,
     Plus,
     Minus,
+    Ref,
+    Deref
 }
 
 impl Display for UnaryOperator {
@@ -132,6 +134,8 @@ impl Display for UnaryOperator {
                 Not => "not",
                 Plus => "+",
                 Minus => "-",
+                Ref => "&",
+                Deref => "*"
             }
         )
     }
@@ -223,6 +227,10 @@ impl Expression {
                     _ => return Err(AnalysisError::MemberAccessOnNonStruct { instance_type: instance.type_.clone(), member: member.clone() })
                 }
             },
+            ExpressionData::Unary { operator: UnaryOperator::Deref, argument } => {
+                argument.type_lhs(scope, module)?;
+                Ok(self.type_.clone())
+            },
             _ => Err(AnalysisError::AssignmentOnValue { value: self.clone() })
         }
     }
@@ -248,8 +256,7 @@ pub enum TypeKind {
 pub struct TypeDefinition {
     pub(crate) kind: TypeKind,
     supported_binary_operations: HashMap<BinaryOperator, HashMap<Type, Type>>,
-    supported_unary_operations: HashMap<UnaryOperator, Type>,
-
+    supported_unary_operations: HashMap<UnaryOperator, Type>
 }
 
 impl TypeDefinition {
@@ -513,11 +520,17 @@ impl FunctionScope {
                     TokenData::Plus => UnaryOperator::Plus,
                     TokenData::Minus => UnaryOperator::Minus,
                     TokenData::Not => UnaryOperator::Not,
+                    TokenData::Ref => UnaryOperator::Ref,
+                    TokenData::Star => UnaryOperator::Deref,
                     other => return Err(AnalysisError::UnknownUnaryOperator(other))
                 };
                 
-                match argument.type_.clone() {
-                    Type::Identifier(name) => {
+                match (argument.type_.clone(), operator) {
+                    (arg_type, UnaryOperator::Ref) => Ok(Expression {
+                        data: ExpressionData::Unary { operator: UnaryOperator::Ref, argument: Box::new(argument) },
+                        type_: Type::Reference(Box::new(arg_type))
+                    }),
+                    (Type::Identifier(name), _) => {
                         let arg_type = module.get_type(&name)?;
                         match arg_type.apply_unary(operator) {
                             Some(ty) => Ok(Expression {
@@ -527,7 +540,11 @@ impl FunctionScope {
                             None => Err(AnalysisError::UnsupportedUnaryOperation { op: operator, argument: Type::Identifier(name) })
                         }
                     },
-                    other => Err(AnalysisError::UnsupportedUnaryOperation { op: operator, argument: other }),
+                    (Type::Reference(inner), UnaryOperator::Deref) => Ok(Expression {
+                        data: ExpressionData::Unary { operator: UnaryOperator::Deref, argument: Box::new(argument) }, 
+                        type_: *inner
+                    }),
+                    (argument, op) => Err(AnalysisError::UnsupportedUnaryOperation { op, argument }),
                 }
             }
             ast::Expression::ParenBlock(inner) => {

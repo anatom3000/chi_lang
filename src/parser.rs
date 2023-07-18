@@ -147,7 +147,7 @@ impl Parser {
 
     fn unary(&mut self) -> Option<Expression> {
         match self.current_token() {
-            Some(TokenData::Not | TokenData::Plus | TokenData::Minus) => {
+            Some(TokenData::Not | TokenData::Plus | TokenData::Minus | TokenData::Ref | TokenData::Star) => {
                 let operator = self.current_token().expect("current token should be valid");
                 self.current += 1;
                 return Some(Expression::Unary {
