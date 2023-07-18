@@ -75,9 +75,13 @@ def main() {
 
     // structs
     let origin = Point {
-        x: 0.0,
-        y: 0.0
+        x: 1.0,
+        y: -1.0
     }
+
+    // we misplaced the origin, let's fix it!
+    origin.x = 0.0
+    origin.y = 0.0
     
     printf("The origin is at (%f, %f)", origin.x, origin.y)
 

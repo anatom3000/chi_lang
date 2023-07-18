@@ -71,8 +71,8 @@ pub enum Statement {
         value: Expression,
     },
     Assignment {
-        name: String,
-        value: Expression,
+        lhs: Expression,
+        rhs: Expression,
     },
     FunctionDeclaration {
         name: String,

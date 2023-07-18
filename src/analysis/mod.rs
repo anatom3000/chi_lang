@@ -71,6 +71,9 @@ pub enum AnalysisError {
     MissingMemberInInit {
         struct_name: String,
         missing: String
+    },
+    AssignmentOnValue {
+        value: Expression
     }
 }
 
@@ -170,7 +173,7 @@ impl Display for Type {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum ExpressionData {
+pub enum ExpressionData {
     Binary {
         left: Box<Expression>,
         operator: BinaryOperator,
@@ -199,13 +202,30 @@ pub(crate) enum ExpressionData {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct Expression {
+pub struct Expression {
     pub data: ExpressionData,
     pub type_: Type
 }
 
 impl Expression {
+    fn type_lhs(&self, scope: &FunctionScope, module: &ModuleScope) -> Result<Type, AnalysisError> {
+        match &self.data {
+            ExpressionData::Variable(name) => Ok(scope.get_variable(module, name)?.clone()),
+            ExpressionData::StructMember { instance, member } => {
+                let instance_type = module.get_type(match &instance.type_ {
+                    Type::Identifier(name) => &name,
+                    ty => return Err(AnalysisError::UnknownType(ty.clone()))
+                })?;
 
+                match instance_type.kind {
+                    TypeKind::Struct { ref members } => Ok(members.get(member as &str)
+                        .ok_or(AnalysisError::UnknownMember { instance_type: instance.type_.clone(), member: member.clone() })?.clone()),
+                    _ => return Err(AnalysisError::MemberAccessOnNonStruct { instance_type: instance.type_.clone(), member: member.clone() })
+                }
+            },
+            _ => Err(AnalysisError::AssignmentOnValue { value: self.clone() })
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -250,8 +270,8 @@ pub(crate) enum Statement {
         value: Expression,
     },
     Assignment {
-        name: String,
-        value: Expression,
+        lhs: Expression,
+        rhs: Expression,
     },
     FunctionDeclaration {
         name: String,
@@ -277,7 +297,7 @@ pub struct FunctionScope {
     pub(crate) statements: Vec<Statement>,
     // TODO: custom F
     // types: HashMap<String, Type>,
-    pub(crate) variables: HashMap<String, Expression>,
+    pub(crate) variables: HashMap<String, Type>,
 }
 
 impl FunctionScope {
@@ -285,10 +305,11 @@ impl FunctionScope {
         module.get_function(name)
     }
 
-    fn get_variable<'a>(&'a self, module: &'a ModuleScope, name: &str) -> Option<&Expression> {
-        self.variables
-            .get(name)
-            .or_else(|| module.get_variable(name))
+    fn get_variable<'a>(&'a self, module: &'a ModuleScope, name: &str) -> Result<&Type, AnalysisError> {
+        match self.variables.get(name) {
+            Some(ty) => Ok(ty),
+            None => module.get_variable(name)
+        }
     }
 
     fn execution_pass(&mut self, module: &ModuleScope) -> Result<(), AnalysisError> {
@@ -316,27 +337,23 @@ impl FunctionScope {
                 value,
             } => {
                 let rhs = self.type_expression(module, value)?;
-                self.variables.insert(name.clone(), rhs.clone());
+                self.variables.insert(name.clone(), rhs.type_.clone());
                 Ok(Statement::LetAssignment {
                     name: name,
                     value: rhs,
                 })
             },
-            Assignment { name, value } => {
-                let value = self.type_expression(module, value)?;
-                let previous_value = match self.get_variable(module, &name) {
-                    Some(var) => var,
-                    None => return Err(AnalysisError::UnknownVariable(name))
-                };
+            Assignment { lhs, rhs } => {
+                let rhs = self.type_expression(module, rhs)?;
+                let lhs = self.type_expression(module, lhs)?;
+                let lhs_ty = lhs.type_lhs(self, module)?;
 
                 // TODO: coherce types
-                if value.type_ != previous_value.type_ {
-                    return Err(AnalysisError::UnexpectedType { expected: previous_value.type_.clone(), found: value.type_ })
+                if lhs_ty != rhs.type_ {
+                    return Err(AnalysisError::UnexpectedType { expected: lhs_ty.clone(), found: rhs.type_ })
                 }
 
-                self.variables.insert(name.clone(), value.clone());
-
-                Ok(Statement::Assignment { name, value })
+                Ok(Statement::Assignment { lhs, rhs })
 
             },
             If {
@@ -428,10 +445,7 @@ impl FunctionScope {
         variables.extend(head.arguments.iter().cloned().map(|(name, type_)| {
             (
                 name.clone(),
-                Expression {
-                    data: ExpressionData::Variable(name),
-                    type_
-                },
+                type_
             )
         }));
 
@@ -592,13 +606,10 @@ impl FunctionScope {
                     type_: function.return_type,
                 })
             }
-            ast::Expression::Variable(name) => match self.get_variable(module, &name) {
-                Some(var) => Ok(Expression {
-                    data: ExpressionData::Variable(name),
-                    type_: var.type_.clone(),
-                }),
-                None => Err(AnalysisError::UnknownVariable(name)),
-            },
+            ast::Expression::Variable(name) => Ok(Expression {
+                type_: self.get_variable(module, &name)?.clone(),
+                data: ExpressionData::Variable(name),
+            }),
             ast::Expression::StructMember { instance, member } => {
                 let instance = self.type_expression(module, *instance)?;
 
@@ -668,7 +679,7 @@ pub(crate) struct ModuleScope {
     pub(crate) declared_functions: HashMap<String, FunctionScope>,
     pub(crate) types: HashMap<String, TypeDefinition>,
     pub(crate) externs: Vec<ExternScope>,
-    pub(crate) global_variables: HashMap<String, Expression>,
+    pub(crate) global_variables: HashMap<String, Type>,
 }
 
 impl ModuleScope {
@@ -759,7 +770,7 @@ impl ModuleScope {
                     let rhs = self.type_expression(value)?;
 
                     self.global_variables
-                        .insert(name.clone(), rhs.clone());
+                        .insert(name.clone(), rhs.type_.clone());
                     self.statements.push(Statement::LetAssignment {
                         name,
                         value: rhs,
@@ -827,8 +838,8 @@ impl ModuleScope {
         }
     }
 
-    fn get_variable(&self, name: &str) -> Option<&Expression> {
-        self.global_variables.get(name)
+    fn get_variable(&self, name: &str) -> Result<&Type, AnalysisError> {
+        self.global_variables.get(name).ok_or_else(|| AnalysisError::UnknownVariable(name.to_string()))
     }
 
     pub fn get_type(&self, name: &String) -> Result<&TypeDefinition, AnalysisError> {

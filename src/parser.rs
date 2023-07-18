@@ -537,21 +537,10 @@ impl Parser {
                 self.current += 1;
                 self.return_stmt()
             },
-            Some(TokenData::Identifier(name)) => {
-                self.current += 1;
-                Some(match self.current_token() {
-                    Some(TokenData::Assign) => {
-                        self.current += 1;
-                        self.assign_stmt(name)?
-                    },
-                    _ => {
-                        // the statement could be a function call, etc.
-                        self.current -= 1;
-                        Statement::Expression(self.expression()?)
-                    }
-                })
+            Some(_) => {
+                let expr = self.expression()?;
+                self.expr_stmt(expr)
             },
-            Some(_) => Some(Statement::Expression(self.expression()?)),
             None => {
                 self.errors.push(ParserError::Expected {
                     rule: "statement",
@@ -560,6 +549,17 @@ impl Parser {
                 None
             }
         }
+    }
+
+    fn expr_stmt(&mut self, expr: Expression) -> Option<Statement> {
+        Some(match self.current_token() {
+            Some(TokenData::Assign) => {
+                self.current += 1;
+                let rhs = self.expression()?;
+                Statement::Assignment { lhs: expr, rhs }
+            },
+            _ => Statement::Expression(expr)
+        })
     }
 
     fn let_stmt(&mut self) -> Option<Statement> {
@@ -585,10 +585,6 @@ impl Parser {
         }
 
         None
-    }
-
-    fn assign_stmt(&mut self, name: String) -> Option<Statement> {
-        Some(Statement::Assignment { name, value: self.expression()? })
     }
 
     fn def_stmt(&mut self) -> Option<Statement> {

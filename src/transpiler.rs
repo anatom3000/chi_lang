@@ -91,10 +91,11 @@ impl Transpiler {
                 self.add_line(format!("{} = {};", declaration, expr));
                 // self.add_new_line();
             }
-            Assignment { name, value } => {
-                let expr = self.transpile_expression(value.data);
+            Assignment { lhs, rhs } => {
+                let lhs = self.transpile_expression(lhs.data);
+                let rhs = self.transpile_expression(rhs.data);
 
-                self.add_line(format!("{} = {};", name, expr));
+                self.add_line(format!("{} = {};", lhs, rhs));
                 // self.add_new_line();
             }
             FunctionDeclaration { name } => {
