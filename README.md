@@ -45,7 +45,7 @@ comparison = term ( (">" | "<" | ">=" | "<=") term )*
 term = factor ( ("+" | "-") factor)*
 factor = unary ( ("*" | "/") unary)*
 
-unary = ("not" | "+" | "-") unary
+unary = ("not" | "+" | "-" | "&" | "*") unary
       | primary
 
 primary = INTEGER
