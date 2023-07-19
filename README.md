@@ -1,7 +1,7 @@
 # The χ (chi) programming language
 
 ### Syntax
-
+> Note: `?sep` will be used to indicate that the block before can be omitted at the last repetition of a `*` or `+` block
 ```ebnf
 program = statement_list
 
@@ -19,7 +19,7 @@ statement = def_stmt
 
 (* module level statements *)
 def_stmt = "def" function_head "{" function_body
-struct_stmt = "struct" IDENTIFIER "{" ( IDENTIFIER ":" type "," )* "}"
+struct_stmt = "struct" IDENTIFIER "{" ( IDENTIFIER ":" type ","?sep )* "}"
 extern_stmt = "extern" STRING "{" extern_body
 
 (* let statements can be used at both the module and function level *)
@@ -36,7 +36,7 @@ assign_stmt = IDENTIFIER "=" expression
 
 function_body = statement_list* "}"
 extern_body = "\n"* ( "def" function_head "\n"+ )*
-function_head = IDENTIFIER "(" ( IDENTIFIER ":" type "," )* "..."? ")" ("->" type)?
+function_head = IDENTIFIER "(" ( IDENTIFIER ":" type ","?sep )* "..."? ")" ("->" type)?
 
 (* expressions *)
 expression = equality
