@@ -99,7 +99,7 @@ impl Transpiler {
                 // self.add_new_line();
             }
             FunctionDeclaration { name } => {
-                let func = module.declared_functions[&name].clone();
+                let func = module.get_function(&name).expect("referenced function exists").clone();
 
                 let mut args = func
                     .head

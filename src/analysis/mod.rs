@@ -308,8 +308,8 @@ pub struct FunctionScope {
 }
 
 impl FunctionScope {
-    fn get_function<'a>(&'a self, module: &'a ModuleScope, name: &str) -> Option<&FunctionHead> {
-        module.get_function(name)
+    fn get_function_head<'a>(&'a self, module: &'a ModuleScope, name: &str) -> Option<&FunctionHead> {
+        module.get_function_head(name)
     }
 
     fn get_variable<'a>(&'a self, module: &'a ModuleScope, name: &str) -> Result<&Type, AnalysisError> {
@@ -446,8 +446,8 @@ impl FunctionScope {
         }
     }
 
-    fn new(source: Vec<ast::Statement>, module: &ModuleScope, head: FunctionHead) -> Self {
-        let mut variables = module.global_variables.clone();
+    fn new(source: Vec<ast::Statement>, head: FunctionHead) -> Self {
+        let mut variables = HashMap::new();
 
         variables.extend(head.arguments.iter().cloned().map(|(name, type_)| {
             (
@@ -559,7 +559,7 @@ impl FunctionScope {
                 function: function_name,
                 arguments,
             } => {
-                let function = match self.get_function(module, &function_name) {
+                let function = match self.get_function_head(module, &function_name) {
                     Some(func) => func.clone(),
                     None => return Err(AnalysisError::UnknownFunction(function_name)),
                 };
@@ -689,14 +689,19 @@ pub struct ExternScope {
     pub(crate) functions: HashMap<String, FunctionHead>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum Resource {
+    Function(FunctionScope),
+    Type(TypeDefinition),
+    Variable(Type)
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct ModuleScope {
     source: Vec<ast::Statement>,
     pub(crate) statements: Vec<Statement>,
-    pub(crate) declared_functions: HashMap<String, FunctionScope>,
-    pub(crate) types: HashMap<String, TypeDefinition>,
+    pub(crate) resources: HashMap<String, Resource>,
     pub(crate) externs: Vec<ExternScope>,
-    pub(crate) global_variables: HashMap<String, Type>,
 }
 
 impl ModuleScope {
@@ -738,9 +743,9 @@ impl ModuleScope {
                         is_variadic: false,
                     };
 
-                    let func = FunctionScope::new(body, self, head);
+                    let func = FunctionScope::new(body, head);
 
-                    self.declared_functions.insert(name.clone(), func.clone());
+                    self.resources.insert(name.clone(), Resource::Function(func.clone()));
 
                     declared_functions.insert(name.clone(), func);
 
@@ -786,8 +791,7 @@ impl ModuleScope {
                 } => {
                     let rhs = self.type_expression(value)?;
 
-                    self.global_variables
-                        .insert(name.clone(), rhs.type_.clone());
+                    self.resources.insert(name.clone(), Resource::Variable(rhs.type_.clone()));
                     self.statements.push(Statement::LetAssignment {
                         name,
                         value: rhs,
@@ -802,7 +806,7 @@ impl ModuleScope {
                         typed_members.insert(m_name, self.analyse_type(m_type)?);
                     }
 
-                    self.types.insert(name.clone(), TypeDefinition { 
+                    self.resources.insert(name.clone(), Resource::Type(TypeDefinition { 
                         kind: TypeKind::Struct { 
                             members: typed_members
                         }, 
@@ -810,7 +814,7 @@ impl ModuleScope {
                         // (or at least provide a default internal implementation for `==`)
                         supported_binary_operations: HashMap::new(),
                         supported_unary_operations: HashMap::new()
-                    });
+                    }));
                     self.statements.push(Statement::StructDeclaration { name })
                 },
                 other @ ( 
@@ -834,16 +838,26 @@ impl ModuleScope {
     pub(crate) fn execution_pass(&mut self) -> Result<(), AnalysisError> {
         let module = self.clone();
 
-        for (_, func) in self.declared_functions.iter_mut() {
-            func.execution_pass(&module)?;
+        for (_, res) in self.resources.iter_mut() {
+            if let Resource::Function(func) = res {
+                func.execution_pass(&module)?;
+            }
+            
         }
 
         Ok(())
     }
 
-    fn get_function(&self, name: &str) -> Option<&FunctionHead> {
-        match self.declared_functions.get(name) {
-            Some(func) => Some(&func.head),
+    pub(crate) fn get_function(&self, name: &str) -> Option<&FunctionScope> {
+        match self.resources.get(name) {
+            Some(Resource::Function(func)) => Some(func),
+            _ => None
+        }
+    }
+
+    pub(crate) fn get_function_head(&self, name: &str) -> Option<&FunctionHead> {
+        match self.get_function(name) {
+            Some(f) => Some(&f.head),
             None => {
                 for ext in self.externs.iter() {
                     if let Some(func) = ext.functions.get(name) {
@@ -855,14 +869,17 @@ impl ModuleScope {
         }
     }
 
-    fn get_variable(&self, name: &str) -> Result<&Type, AnalysisError> {
-        self.global_variables.get(name).ok_or_else(|| AnalysisError::UnknownVariable(name.to_string()))
+    pub(crate) fn get_variable(&self, name: &str) -> Result<&Type, AnalysisError> {
+        match self.resources.get(name) {
+            Some(Resource::Variable(v)) => Ok(v),
+            _ => Err(AnalysisError::UnknownVariable(name.to_string()))
+        }
     }
 
     pub fn get_type(&self, name: &String) -> Result<&TypeDefinition, AnalysisError> {
-        match self.types.get(name) {
-            Some(ty) => Ok(ty),
-            None => match builtins::TYPES.get(name) {
+        match self.resources.get(name) {
+            Some(Resource::Type(ty)) => Ok(ty),
+            _ => match builtins::TYPES.get(name) {
                 Some(ty) => Ok(ty),
                 None => Err(AnalysisError::UnknownType(Type::Identifier(name.clone())))
             }
@@ -873,10 +890,8 @@ impl ModuleScope {
         ModuleScope {
             source,
             statements: vec![],
-            types: HashMap::new(),
-            declared_functions: HashMap::new(),
+            resources: HashMap::new(),
             externs: vec![],
-            global_variables: HashMap::new(),
         }
     }
 
@@ -887,7 +902,7 @@ impl ModuleScope {
     }
 
     fn type_expression(&self, expression: ast::Expression) -> Result<Expression, AnalysisError> {
-        FunctionScope::new(vec![], self, FunctionHead { return_type: Type::Void, arguments: vec![], is_variadic: false }).type_expression(self, expression)
+        FunctionScope::new(vec![], FunctionHead { return_type: Type::Void, arguments: vec![], is_variadic: false }).type_expression(self, expression)
     }
 
     fn analyse_new_type(&self, ty: ast::Type) -> Type {
