@@ -700,7 +700,7 @@ pub(crate) struct ModuleScope {
 }
 
 impl ModuleScope {
-    fn declaration_pass(&mut self) -> Result<(), AnalysisError> {
+    pub(crate) fn declaration_pass(&mut self) -> Result<(), AnalysisError> {
         let mut declared_functions = HashMap::new();
 
         for stmt in self.source.iter() {
@@ -831,7 +831,7 @@ impl ModuleScope {
         Ok(())
     }
 
-    fn execution_pass(&mut self) -> Result<(), AnalysisError> {
+    pub(crate) fn execution_pass(&mut self) -> Result<(), AnalysisError> {
         let module = self.clone();
 
         for (_, func) in self.declared_functions.iter_mut() {
@@ -860,14 +860,20 @@ impl ModuleScope {
     }
 
     pub fn get_type(&self, name: &String) -> Result<&TypeDefinition, AnalysisError> {
-        self.types.get(name).ok_or_else(|| AnalysisError::UnknownType(Type::Identifier(name.clone())))
+        match self.types.get(name) {
+            Some(ty) => Ok(ty),
+            None => match builtins::TYPES.get(name) {
+                Some(ty) => Ok(ty),
+                None => Err(AnalysisError::UnknownType(Type::Identifier(name.clone())))
+            }
+        }
     }
 
-    pub fn from_source(source: Vec<ast::Statement>) -> Self {
+    pub fn new(source: Vec<ast::Statement>) -> Self {
         ModuleScope {
             source,
             statements: vec![],
-            types: builtins::TYPES.clone(),
+            types: HashMap::new(),
             declared_functions: HashMap::new(),
             externs: vec![],
             global_variables: HashMap::new(),

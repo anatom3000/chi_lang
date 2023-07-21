@@ -2,9 +2,9 @@ use crap_lang::*;
 
 fn main() {
 
-    let src = include_str!("refs.chi"); // extension is temporary until i find a name for the language
+    let src = "src/refs.chi";
 
     // println!("Source: `{src}`");
     
-    transpile(src);
+    transpile(src).unwrap();
 }
