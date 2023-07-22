@@ -21,6 +21,8 @@ statement = def_stmt
 def_stmt = "def" function_head "{" function_body
 struct_stmt = "struct" IDENTIFIER "{" ( IDENTIFIER ":" type ","?sep )* "}"
 extern_stmt = "extern" STRING "{" extern_body
+import_stmt = "import" resource_path
+            | "import" "." IDENTIFIER
 
 (* let statements can be used at both the module and function level *)
 let_stmt = "let" IDENTIFIER "=" expression
@@ -37,6 +39,7 @@ assign_stmt = IDENTIFIER "=" expression
 function_body = statement_list* "}"
 extern_body = "\n"* ( "def" function_head "\n"+ )*
 function_head = IDENTIFIER "(" ( IDENTIFIER ":" type ","?sep )* "..."? ")" ("->" type)?
+resource_path = IDENTIFIER ("." IDENTIFIER)*
 
 (* expressions *)
 expression = equality

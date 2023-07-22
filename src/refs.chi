@@ -1,3 +1,5 @@
+import .simple
+
 extern "<stdio.h>" {
     def printf(fmt_str: &char, ...)
 }

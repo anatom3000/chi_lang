@@ -103,5 +103,12 @@ pub enum Statement {
         condition: Expression,
         body: Vec<Statement>
     },
-    Return(Option<Expression>)
+    Return(Option<Expression>),
+    Import(Import)
+}
+
+#[derive(Debug, Clone)]
+pub enum Import {
+    Relative(String),
+    Absolute(Vec<String>)
 }

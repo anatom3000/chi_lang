@@ -1,18 +1,41 @@
+use std::{path::PathBuf, collections::HashMap};
+
 use crate::{
-    analysis::{Type, ExpressionData, ModuleScope, Statement, TypeKind},
+    analysis::{Type, ExpressionData, ModuleScope, Statement, TypeKind, Resource},
     ast::Literal,
 };
 
-pub(crate) struct Transpiler {
-    lines: Vec<String>,
+pub(crate) struct ModuleTranspiler {
+    pub(crate) source_path: PathBuf,
+    pub(crate) header_path: PathBuf,
+    source: Vec<String>,
     header: Vec<String>,
     indent: usize,
 }
 
-impl Transpiler {
-    pub fn transpile(name: String, scope: ModuleScope) -> Transpiler {
-        let mut new: Transpiler = Self {
-            lines: vec![],
+impl ModuleTranspiler {
+    pub fn transpile(path: Vec<String>, scope: ModuleScope, transpiled_modules: &mut HashMap<Vec<String>, ModuleTranspiler>) {
+
+        if transpiled_modules.contains_key(&path) {
+            for (_, res) in scope.resources {
+                if let Resource::Module(m) = res {
+                    ModuleTranspiler::transpile(m.path, m.scope.expect("analysis called before transpilation"), transpiled_modules)
+                }
+            }
+            return;
+        }
+        
+        let mut source_path: PathBuf = path.iter().collect();
+        let mut header_path = source_path.clone();
+
+        source_path.set_extension("c");
+        header_path.set_extension("h");
+
+
+        let mut new = ModuleTranspiler {
+            source_path,
+            header_path,
+            source: vec![],
             header: vec![],
             indent: 0,
         };
@@ -37,7 +60,7 @@ impl Transpiler {
             }
         }
 
-        let guard_name = format!("_{}_H", name.to_uppercase());
+        let guard_name = format!("_{}_H", path.iter().map(|x| x.to_uppercase()).collect::<Vec<_>>().join("_"));
 
         new.add_header_line(format!("#ifndef {guard_name}"));
         new.add_header_line(format!("#define {guard_name}"));
@@ -56,16 +79,23 @@ impl Transpiler {
         new.add_new_header_line();
         new.add_header_line("#endif".to_string());
 
-        new
+        transpiled_modules.insert(path, new);
+
+
+        for (_, res) in scope.resources {
+            if let Resource::Module(m) = res {
+                ModuleTranspiler::transpile(m.path, m.scope.expect("analysis called before transpilation"), transpiled_modules)
+            }
+        }
     }
 
     fn add_line(&mut self, line: String) {
-        self.lines
+        self.source
             .push(format!("{}{line}", "    ".repeat(self.indent)))
     }
 
     fn add_new_line(&mut self) {
-        self.lines.push(String::new())
+        self.source.push(String::new())
     }
     
     fn add_header_line(&mut self, line: String) {
@@ -123,7 +153,7 @@ impl Transpiler {
                 }
 
                 self.indent -= 1;
-                //self.lines.pop();
+                //self.source.pop();
                 self.add_line('}'.to_string());
                 self.add_new_line();
             },
@@ -196,6 +226,9 @@ impl Transpiler {
                     },
                     None => self.add_line(format!("return;"))
                 };
+            },
+            Import(path) => {
+                self.add_header_line(format!("#include \"{}.h\"", path.join("/")))
             }
         }
     }
@@ -301,9 +334,9 @@ fn transpile_primitive_type(from: String) -> String {
     }.to_string()
 }
 
-impl Transpiler {
-    pub fn lines(&self) -> String {
-        self.lines.join("\n").trim().to_string()
+impl ModuleTranspiler {
+    pub fn source(&self) -> String {
+        self.source.join("\n").trim().to_string()
     }
 
     pub fn header(&self) -> String {

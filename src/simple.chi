@@ -1,1 +1,3 @@
-if a {} elif b {} elif c {} else {}
+def hello() {
+    let a = 1
+}

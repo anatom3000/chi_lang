@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::fmt::Display;
+use std::vec;
 
-use crate::ast::{self, Expression, Statement, Type, Literal};
+use crate::ast::{self, Expression, Statement, Type, Literal, Import};
 use crate::lexer::{self, Token, TokenData};
 
 #[derive(Debug, Clone)]
@@ -537,6 +538,10 @@ impl Parser {
                 self.current += 1;
                 self.return_stmt()
             },
+            Some(TokenData::Import) => {
+                self.current += 1;
+                self.import_stmt()
+            }
             Some(_) => {
                 let expr = self.expression()?;
                 self.expr_stmt(expr)
@@ -1030,5 +1035,52 @@ impl Parser {
             Some(TokenData::NewLine | TokenData::Semicolon) | None => Statement::Return(None),
             _ => Statement::Return(Some(self.expression()?))
         })
+    }
+    
+    fn import_stmt(&mut self) -> Option<Statement> {
+        Some(match self.current_token() {
+            Some(TokenData::Dot) => {
+                self.current += 1;
+                match self.current_token() {
+                    Some(TokenData::Identifier(name)) => {
+                        self.current += 1;
+                        Statement::Import(Import::Relative(name))
+                    },
+                    _ => {
+                        self.errors.push(ParserError::Expected { rule: "identifier", found: self.full_current_token() });
+                        return None
+                    }
+                }
+            },
+            _ => Statement::Import(Import::Absolute(self.resource_path()?))
+        })
+    }
+
+    fn resource_path(&mut self) -> Option<Vec<String>> {
+        let mut path = vec![];
+
+        loop {
+            match self.current_token() {
+                Some(TokenData::Identifier(name)) => {
+                    path.push(name);
+                    self.current += 1;
+                    match self.current_token() {
+                        Some(TokenData::Dot) => self.current += 1,
+                        Some(TokenData::NewLine | TokenData::Semicolon) => {
+                            self.current += 1;
+                            return Some(path)
+                        },
+                        _ => {
+                            self.errors.push(ParserError::Expected { rule: "`.`, `;` or newline", found: self.full_current_token() });
+                            return None
+                        }
+                    }
+                },
+                _ => {
+                    self.errors.push(ParserError::Expected { rule: "identifier in resource path", found: self.full_current_token() });
+                    return None
+                }
+            }
+        }
     }
 }

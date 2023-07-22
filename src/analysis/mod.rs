@@ -1,9 +1,12 @@
 use std::collections::HashMap;
 use std::fmt::Display;
-use std::mem;
+use std::path::PathBuf;
+use std::{mem, vec};
 
 use crate::ast::{self, Literal};
 use crate::lexer;
+use crate::module::Module;
+use crate::parser::ParserError;
 
 #[macro_use]
 pub mod builtins;
@@ -74,6 +77,18 @@ pub enum AnalysisError {
     },
     AssignmentOnValue {
         value: Expression
+    },
+    UnknownModule {
+        path: Vec<String>
+    },
+    ParserError(Vec<ParserError>),
+    DuplicateModuleFile {
+        path: Vec<String>,
+        files: (PathBuf, PathBuf)
+    },
+    RootModuleFileOutside {
+        path: Vec<String>,
+        file: PathBuf
     }
 }
 
@@ -294,7 +309,8 @@ pub(crate) enum Statement {
         condition: Expression,
         body: Vec<Statement>
     },
-    Return(Option<Expression>)
+    Return(Option<Expression>),
+    Import(Vec<String>)
 }
 
 #[derive(Clone, Debug)]
@@ -436,9 +452,10 @@ impl FunctionScope {
             },
             other @ (
                   FunctionDeclaration {..}
-                | ExternFunctionDeclaration{..}
-                | ExternBlock{..}
-                | StructDeclaration { .. }
+                | ExternFunctionDeclaration {..}
+                | ExternBlock {..}
+                | StructDeclaration {..}
+                | Import(_)
             ) => Err(AnalysisError::StatementInWrongContext {
                 statement: other,
                 found_context: "function body",
@@ -693,7 +710,9 @@ pub struct ExternScope {
 pub(crate) enum Resource {
     Function(FunctionScope),
     Type(TypeDefinition),
-    Variable(Type)
+    Variable(Type),
+    #[allow(dead_code)]
+    Module(Module)
 }
 
 #[derive(Clone, Debug)]
@@ -705,11 +724,11 @@ pub(crate) struct ModuleScope {
 }
 
 impl ModuleScope {
-    pub(crate) fn declaration_pass(&mut self) -> Result<(), AnalysisError> {
+    pub(crate) fn declaration_pass(&mut self, module: &Module) -> Result<(), AnalysisError> {
         let mut declared_functions = HashMap::new();
 
-        for stmt in self.source.iter() {
-            match stmt.clone() {
+        for stmt in self.source.clone() {
+            match stmt {
                 ast::Statement::FunctionDeclaration {
                     name,
                     return_type,
@@ -817,6 +836,10 @@ impl ModuleScope {
                     }));
                     self.statements.push(Statement::StructDeclaration { name })
                 },
+                ast::Statement::Import(kind) => match kind {
+                    ast::Import::Absolute(_) => todo!("absolute paths"),
+                    ast::Import::Relative(name) => self.import_local_module(module, name)?
+                },
                 other @ ( 
                       ast::Statement::Expression(_) 
                     | ast::Statement::If {..}
@@ -832,6 +855,18 @@ impl ModuleScope {
                 },
             }
         }
+        Ok(())
+    }
+
+    fn import_local_module(&mut self, module: &Module, end: String) -> Result<(), AnalysisError> {
+        let mut submodule = module.child(end.clone())?;
+
+        submodule.declaration_pass()?;
+
+        self.statements.push(Statement::Import(submodule.path.clone()));
+
+        self.resources.insert(end, Resource::Module(submodule));
+
         Ok(())
     }
 
@@ -893,12 +928,6 @@ impl ModuleScope {
             resources: HashMap::new(),
             externs: vec![],
         }
-    }
-
-    pub fn analyse(&mut self) -> Result<(), AnalysisError> {
-        self.declaration_pass()?;
-        self.execution_pass()?;
-        Ok(())
     }
 
     fn type_expression(&self, expression: ast::Expression) -> Result<Expression, AnalysisError> {
