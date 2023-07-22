@@ -23,7 +23,7 @@ pub enum TranspileError {
     AnalysisError(AnalysisError)
 }
 
-pub fn transpile(main_file: &str) -> Result<(), TranspileError> {
+pub fn transpile(main_file: &str, target_dir: &str) -> Result<(), TranspileError> {
     let main_path = Path::new(main_file).to_path_buf();
     
     let mut main_module = Module::main(main_path)?;
@@ -31,5 +31,5 @@ pub fn transpile(main_file: &str) -> Result<(), TranspileError> {
     main_module.analyse().map_err(|e| TranspileError::AnalysisError(e))?;
 
 
-    main_module.transpile("generated".into())
+    main_module.transpile(target_dir.into())
 }
