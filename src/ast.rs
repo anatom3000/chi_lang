@@ -32,8 +32,7 @@ pub enum Expression {
     },
     ParenBlock(Box<Expression>),
     FunctionCall {
-        // TODO: namespaces
-        function: String,
+        function: Vec<String>,
         arguments: Vec<Expression>,
     },
     StructMember {
@@ -41,17 +40,17 @@ pub enum Expression {
         member: String
     },
     StructInit {
-        name: String,
+        path: Vec<String>,
         members: HashMap<String, Expression>
     },
-    Variable(String),
+    Variable(Vec<String>),
     Literal(Literal),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
     Void,
-    Identifier(String),
+    Path(Vec<String>),
     // Array {
     //     base: Box<Type>,
     //     size: String

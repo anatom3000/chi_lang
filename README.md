@@ -34,7 +34,7 @@ if_stmt = "if" expression "{" function_body
 
 while_stmt = "while" expression "{" function_body
 return_stmt = "return" expression?
-assign_stmt = IDENTIFIER "=" expression
+assign_stmt = expression "=" expression
 
 function_body = statement_list* "}"
 extern_body = "\n"* ( "def" function_head "\n"+ )*
@@ -56,14 +56,14 @@ primary = INTEGER
         | function_call
         | struct_member
         | struct_init
-        | IDENTIFIER
+        | resource_path
         | STRING
         | "true"
         | "false"
         | "null"
         | "(" expression ")"
 
-function_call = IDENTIFIER "(" ( expression "," )* ")"
+function_call = resource_path "(" ( expression "," )* ")"
 struct_member = primary "." IDENTIFIER
 struct_init = IDENTIFIER "{" ( IDENTIFIER ":" expression "," )* "}"
 

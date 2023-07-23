@@ -2,7 +2,7 @@ import .math
 import .utils
 
 def main() {
-    let a = add(3, add(2, 4));
+    let a = math.add(3, math.add(2, 4));
 
-    print("wow!")
+    utils.print("wow!")
 }

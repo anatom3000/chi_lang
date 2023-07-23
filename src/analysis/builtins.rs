@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use lazy_static::lazy_static;
-use super::{Type, TypeDefinition, TypeKind, BinaryOperator, UnaryOperator};
+use super::{Type, TypeDefinition, TypeKind, BinaryOperator, UnaryOperator, Resource};
 
 macro_rules! num_type {
     ($self:ident ; $($smaller:ident)*) => {{
@@ -12,7 +12,7 @@ macro_rules! num_type {
             (type_!($self), type_!(bool)),
             $( (type_!($smaller), type_!(bool)), )*
         ]);
-        (stringify!($self).to_string(), TypeDefinition {
+        (vec![stringify!($self).to_string()], Resource::Type(TypeDefinition {
             kind: TypeKind::Primitive,
             supported_binary_operations: HashMap::from([
                 (BinaryOperator::Plus, results.clone()),
@@ -30,7 +30,7 @@ macro_rules! num_type {
                 (UnaryOperator::Minus, type_!($self)),
                 (UnaryOperator::Plus, type_!($self))
             ])
-        })
+        }))
         
     }};
     (unsigned $self:ident) => {{
@@ -40,7 +40,7 @@ macro_rules! num_type {
         let cmp_results = HashMap::from([
             (type_!($self), type_!(bool)),
         ]);
-        (stringify!($self).to_string(), TypeDefinition {
+        (vec![stringify!($self).to_string()], Resource::Type(TypeDefinition {
             kind: TypeKind::Primitive,
             supported_binary_operations: HashMap::from([
                 (BinaryOperator::Plus, results.clone()),
@@ -57,8 +57,7 @@ macro_rules! num_type {
             supported_unary_operations: HashMap::from([
                 (UnaryOperator::Plus, type_!($self))
             ])
-        })
-        
+        }))
     }};
 }
 
@@ -67,17 +66,17 @@ macro_rules! type_ {
     (void) => {
         Type::Void
     };
-    ($name:ident) => {
-        Type::Identifier(stringify!($name).to_string())
+    ($first:ident) => {
+        Type::Path(vec![stringify!($first).to_string()])
     };
-    (& $name:ident) => {
-        Type::Reference(Box::new(type_!($name)))
+    (& $tok:tt) => {
+        Type::Reference(Box::new(type_!($tok)))
     }
 }    
 
 
 lazy_static! {
-    pub(super) static ref TYPES: HashMap<String, TypeDefinition> = HashMap::from([
+    pub(super) static ref TYPES: HashMap<Vec<String>, Resource> = HashMap::from([
         num_type!(int; uint),
         num_type!(unsigned uint),
 
@@ -91,11 +90,11 @@ lazy_static! {
         num_type!(unsigned uint64),
 
         
-        ("bool".to_string(), TypeDefinition {
+        (vec!["bool".to_string()], Resource::Type(TypeDefinition {
             kind: TypeKind::Primitive,
             supported_binary_operations: HashMap::from([(BinaryOperator::Equal, HashMap::from([(type_!(bool), type_!(bool))]))]),
             supported_unary_operations: HashMap::from([(UnaryOperator::Not, type_!(bool))])
-        }),
+        })),
 
         num_type!(float;),
         num_type!(float32;),

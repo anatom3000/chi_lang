@@ -11,22 +11,32 @@ pub(crate) struct ModuleTranspiler {
     source: Vec<String>,
     header: Vec<String>,
     indent: usize,
+    namespace: Vec<String>,
+    is_main: bool
 }
 
 impl ModuleTranspiler {
-    pub fn transpile(path: Vec<String>, scope: ModuleScope, transpiled_modules: &mut HashMap<Vec<String>, ModuleTranspiler>) {
+    pub fn transpile(path: Vec<String>, scope: ModuleScope, transpiled_modules: &mut HashMap<Vec<String>, ModuleTranspiler>, is_main: bool) {
 
         if transpiled_modules.contains_key(&path) {
             for (_, res) in scope.resources {
                 if let Resource::Module(m) = res {
-                    ModuleTranspiler::transpile(m.path, m.scope.expect("analysis called before transpilation"), transpiled_modules)
+                    ModuleTranspiler::transpile(m.path, m.scope.expect("analysis called before transpilation"), transpiled_modules, false)
                 }
             }
             return;
         }
         
-        let mut source_path: PathBuf = path.iter().collect();
-        let mut header_path = source_path.clone();
+        let piter = if is_main {
+            path.iter()
+        } else {
+            let mut p = path.iter();
+            p.next();
+            p
+        };
+
+        let mut source_path: PathBuf = piter.collect();
+        let mut header_path: PathBuf = source_path.clone();
 
         source_path.set_extension("c");
         header_path.set_extension("h");
@@ -38,6 +48,8 @@ impl ModuleTranspiler {
             source: vec![],
             header: vec![],
             indent: 0,
+            namespace: path.clone(),
+            is_main
         };
 
         let mut includes = vec![];
@@ -67,8 +79,11 @@ impl ModuleTranspiler {
         new.add_new_header_line();
 
         for inc in includes {
-            new.add_line(format!("#include {}", inc));
+            new.add_header_line(format!("#include {}", inc));
         }
+
+        new.add_line(format!("#include \"{}\"", new.header_path.display()));
+        
 
         new.add_new_line();
 
@@ -84,7 +99,7 @@ impl ModuleTranspiler {
 
         for (_, res) in scope.resources {
             if let Resource::Module(m) = res {
-                ModuleTranspiler::transpile(m.path, m.scope.expect("analysis called before transpilation"), transpiled_modules)
+                ModuleTranspiler::transpile(m.path, m.scope.expect("analysis called before transpilation"), transpiled_modules, false)
             }
         }
     }
@@ -129,8 +144,8 @@ impl ModuleTranspiler {
                 // self.add_new_line();
             }
             FunctionDeclaration { name } => {
-                let func = module.get_function(&name).expect("referenced function exists").clone();
-
+                let func = module.get_function(&vec![name.clone()]).expect("declared function exists").clone();
+                
                 let mut args = func
                     .head
                     .arguments
@@ -143,7 +158,8 @@ impl ModuleTranspiler {
                     args = "void".to_string();
                 }
 
-                let declaration = self.transpile_declaration(func.head.return_type, format!("{name}({args})"));
+                let func_name = if self.is_main && name == "main" { "main".to_string() } else { self.to_absolute_path(name).join("_") };
+                let declaration = self.transpile_declaration(func.head.return_type, format!("{func_name}({args})"));
                 self.add_header_line(format!("{declaration};"));
                 self.add_line(format!("{declaration} {{"));
                 self.indent += 1;
@@ -158,12 +174,15 @@ impl ModuleTranspiler {
                 self.add_new_line();
             },
             StructDeclaration { name } => {
+                let name = self.to_absolute_path(name);
+
                 let TypeKind::Struct {members} = module.get_type(&name).expect("declared struct exists").kind.clone()
                     else { unreachable!("defined struct should have struct type ") };
 
 
-                self.add_header_line(format!("typedef struct {name} {name};"));
-                self.add_line(format!("typdef struct {name} {{"));
+                let struct_name = name.join("_");
+                self.add_header_line(format!("typedef struct {struct_name} {struct_name};"));
+                self.add_line(format!("typdef struct {struct_name} {{"));
                 self.indent += 1;
                 for (m_name, m_type) in members {
                     let decl = self.transpile_declaration(m_type, m_name);
@@ -171,7 +190,7 @@ impl ModuleTranspiler {
                 }
                 self.indent -= 1;
 
-                self.add_line(format!("}} {name};"));
+                self.add_line(format!("}} {struct_name};"));
                 self.add_new_line();
             },
             If {
@@ -250,6 +269,7 @@ impl ModuleTranspiler {
                 function,
                 arguments,
             } => {
+                let function = self.transpile_path(&function);
                 let args = arguments
                     .into_iter()
                     .map(|e| self.transpile_expression(e.data))
@@ -274,15 +294,15 @@ impl ModuleTranspiler {
             ExpressionData::Unary { operator, argument } => {
                 format!("{operator}{}", self.transpile_expression(argument.data))
             }
-            ExpressionData::Variable(name) => name,
+            ExpressionData::Variable(path) => self.transpile_path(&path),
             ExpressionData::StructMember { instance, member } => format!("{}.{}", self.transpile_expression(instance.data), member),
-            ExpressionData::StructInit { name, members } => {
+            ExpressionData::StructInit { path, members } => {
                 let members = members.into_iter()
                 .map(|(m_name, m_value)| format!(".{m_name} = {}", self.transpile_expression(m_value.data)))
                 .collect::<Vec<_>>()
                 .join(", ");
 
-                format!("({name}) {{ {members} }}")
+                format!("({}) {{ {members} }}", self.transpile_path(&path))
             }
         }
     }
@@ -290,10 +310,10 @@ impl ModuleTranspiler {
     fn transpile_declaration(&mut self, type_: Type, variable: String) -> String {
         match type_ {
             Type::Void => format!("void {variable}", ),
-            Type::Identifier(name) => format!("{} {variable}", transpile_primitive_type(name)),
+            Type::Path(name) => format!("{} {variable}", transpile_primitive_type(self.transpile_path(&name))),
             Type::Reference(inner) => {
                 match *inner {
-                    Type::Void | Type::Identifier(_) | Type::Reference(_) => self.transpile_declaration(*inner, format!("*{variable}")),
+                    Type::Void | Type::Path(_) | Type::Reference(_) => self.transpile_declaration(*inner, format!("*{variable}")),
                     // _ => self.transpile_declaration(*inner, format!("(*{variable})"))
                 }
             },
@@ -305,6 +325,17 @@ impl ModuleTranspiler {
             // },
             // Type::Function { .. } => todo!("function pointer transpile") // for my own sanity
         }
+    }
+
+    fn transpile_path(&self, path: &Vec<String>) -> String {
+        // TODO: check for conflicting function names
+        path.join("_")
+    }
+
+    fn to_absolute_path(&self, path: String) -> Vec<String> {
+        let mut ns = self.namespace.clone();
+        ns.push(path);
+        ns
     }
 }
 

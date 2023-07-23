@@ -15,9 +15,10 @@ pub mod builtins;
 pub enum AnalysisError {
     UnknownBinaryOperator(lexer::TokenData),
     UnknownUnaryOperator(lexer::TokenData),
-    UnknownFunction(String),
-    UnknownVariable(String),
-    UnknownType(Type),
+    UnknownFunction(Vec<String>),
+    UnknownVariable(Vec<String>),
+    UnknownType(Vec<String>),
+    UnknownModule(Vec<String>),
     UnsupportedBinaryOperation {
         op: BinaryOperator,
         left: Type,
@@ -28,12 +29,12 @@ pub enum AnalysisError {
         argument: Type,
     },
     WrongArgumentCount {
-        function: String,
+        function: Vec<String>,
         expected: usize,
         found: usize,
     },
     WrongArgumentType {
-        function: String,
+        function: Vec<String>,
         expected: Type,
         found: Type,
     },
@@ -68,18 +69,15 @@ pub enum AnalysisError {
         struct_name: String,
         duplicated_member: String
     },
-    NotStructInit {
+    NonStructInit {
         found: Type
     },
     MissingMemberInInit {
-        struct_name: String,
+        struct_name: Vec<String>,
         missing: String
     },
     AssignmentOnValue {
         value: Expression
-    },
-    UnknownModule {
-        path: Vec<String>
     },
     ParserError(Vec<ParserError>),
     DuplicateModuleFile {
@@ -159,7 +157,7 @@ impl Display for UnaryOperator {
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Type {
     Void,
-    Identifier(String),
+    Path(Vec<String>),
     // Array {
     //     base: Box<Type>,
     //     size: String
@@ -176,7 +174,7 @@ impl Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.clone() {
             Self::Void => write!(f, "void"),
-            Self::Identifier(name) => write!(f, "{}", name),
+            Self::Path(name) => write!(f, "{}", name.join(".")),
             // Self::Array { base, size } => write!(f, "{}[{}]", base, size),
             Self::Reference(inner) => write!(f, "&{}", inner),
             // Self::Function { return_type, arguments } => {
@@ -204,8 +202,7 @@ pub enum ExpressionData {
     },
     ParenBlock(Box<Expression>),
     FunctionCall {
-        // TODO: namespaces
-        function: String,
+        function: Vec<String>,
         arguments: Vec<Expression>,
     },
     StructMember {
@@ -213,10 +210,10 @@ pub enum ExpressionData {
         member: String
     },
     StructInit {
-        name: String,
+        path: Vec<String>,
         members: HashMap<String, Expression>
     },
-    Variable(String),
+    Variable(Vec<String>),
     Literal(Literal),
 }
 
@@ -232,8 +229,8 @@ impl Expression {
             ExpressionData::Variable(name) => Ok(scope.get_variable(module, name)?.clone()),
             ExpressionData::StructMember { instance, member } => {
                 let instance_type = module.get_type(match &instance.type_ {
-                    Type::Identifier(name) => &name,
-                    ty => return Err(AnalysisError::UnknownType(ty.clone()))
+                    Type::Path(path) => path,
+                    _ => return Err(AnalysisError::MemberAccessOnNonStruct { instance_type: instance.type_.clone(), member: member.clone() })
                 })?;
 
                 match instance_type.kind {
@@ -324,15 +321,17 @@ pub struct FunctionScope {
 }
 
 impl FunctionScope {
-    fn get_function_head<'a>(&'a self, module: &'a ModuleScope, name: &str) -> Option<&FunctionHead> {
+    fn get_function_head<'a>(&'a self, module: &'a ModuleScope, name: &Vec<String>) -> Option<&FunctionHead> {
         module.get_function_head(name)
     }
 
-    fn get_variable<'a>(&'a self, module: &'a ModuleScope, name: &str) -> Result<&Type, AnalysisError> {
-        match self.variables.get(name) {
-            Some(ty) => Ok(ty),
-            None => module.get_variable(name)
+    fn get_variable<'a>(&'a self, module: &'a ModuleScope, path: &Vec<String>) -> Result<&Type, AnalysisError> {
+        if path.len() == 1 {
+            if let Some(ty) = self.variables.get(&path[0]) {
+                return Ok(ty)
+            }
         }
+        module.get_variable(path)
     }
 
     fn execution_pass(&mut self, module: &ModuleScope) -> Result<(), AnalysisError> {
@@ -510,10 +509,10 @@ impl FunctionScope {
                     other => return Err(AnalysisError::UnknownBinaryOperator(other)),
                 };
                 match (&left.type_, &right.type_) {
-                    (Type::Identifier(ltype), Type::Identifier(rtype)) => {
+                    (Type::Path(ltype), Type::Path(rtype)) => {
                         let ltypedef = module.get_type(ltype)?;
                         
-                        Ok(match ltypedef.apply_binary(operator, Type::Identifier(rtype.clone())) {
+                        Ok(match ltypedef.apply_binary(operator, Type::Path(rtype.clone())) {
                             Some(type_) => Expression { data: ExpressionData::Binary { left: Box::new(left), operator, right: Box::new(right) }, type_: type_.clone() },
                             None => {
                                 let rtypedef = module.get_type(rtype)?;
@@ -547,14 +546,14 @@ impl FunctionScope {
                         data: ExpressionData::Unary { operator: UnaryOperator::Ref, argument: Box::new(argument) },
                         type_: Type::Reference(Box::new(arg_type))
                     }),
-                    (Type::Identifier(name), _) => {
-                        let arg_type = module.get_type(&name)?;
+                    (Type::Path(path), _) => {
+                        let arg_type = module.get_type(&path)?;
                         match arg_type.apply_unary(operator) {
                             Some(ty) => Ok(Expression {
                                 data: ExpressionData::Unary { operator, argument: Box::new(argument) },
                                 type_: ty.clone()
                             }),
-                            None => Err(AnalysisError::UnsupportedUnaryOperation { op: operator, argument: Type::Identifier(name) })
+                            None => Err(AnalysisError::UnsupportedUnaryOperation { op: operator, argument: Type::Path(path) })
                         }
                     },
                     (Type::Reference(inner), UnaryOperator::Deref) => Ok(Expression {
@@ -648,7 +647,7 @@ impl FunctionScope {
                 let instance = self.type_expression(module, *instance)?;
 
                 match instance.type_.clone() {
-                    Type::Identifier(ty) => match module.get_type(&ty)?.kind.clone() {
+                    Type::Path(path) => match module.get_type(&path)?.kind.clone() {
                         TypeKind::Struct { members } => {
                             // get the type of the member if it exists, otherwise return an error
                             let member_type = members.get(&member)
@@ -661,14 +660,14 @@ impl FunctionScope {
                     _ => todo!("member access for reference types")
                 }
             },
-            ast::Expression::StructInit { name, mut members } => {
-                match module.get_type(&name)?.kind.clone() {
+            ast::Expression::StructInit { path, mut members } => {
+                match module.get_type(&path)?.kind.clone() {
                     TypeKind::Struct { members: decl_members } => {
                         let mut typed_members = HashMap::new();
 
                         for (m_name, m_type) in decl_members {
                             let value = members.get(&m_name)
-                                .ok_or(AnalysisError::MissingMemberInInit { struct_name: name.clone(), missing: m_name.clone() })?.clone();
+                                .ok_or(AnalysisError::MissingMemberInInit { struct_name: path.clone(), missing: m_name.clone() })?.clone();
                             let value = self.type_expression(module, value)?;
 
                             if value.type_ != m_type {
@@ -682,17 +681,17 @@ impl FunctionScope {
 
                         if !members.is_empty() {
                             return Err(AnalysisError::UnknownMember { 
-                                instance_type: Type::Identifier(name), 
+                                instance_type: Type::Path(path), 
                                 member: members.into_keys().next().expect("members is not empty") 
                             })
                         }
 
                         Ok(Expression { 
-                            data: ExpressionData::StructInit { name: name.clone(), members: typed_members }, 
-                            type_: Type::Identifier(name)
+                            data: ExpressionData::StructInit { path: path.clone(), members: typed_members }, 
+                            type_: Type::Path(path)
                         })
                     },
-                    _ => Err(AnalysisError::NotStructInit { found: Type::Identifier(name) })
+                    _ => Err(AnalysisError::NonStructInit { found: Type::Path(path) })
                 }
             }
             ast::Expression::Literal(lit) => module.type_literal(lit)
@@ -874,28 +873,54 @@ impl ModuleScope {
         let module = self.clone();
 
         for (_, res) in self.resources.iter_mut() {
-            if let Resource::Function(func) = res {
-                func.execution_pass(&module)?;
-            }
-            
+            match res {
+                Resource::Function(func) => func.execution_pass(&module)?,
+                Resource::Module(m) => m.execution_pass()?,
+                _ => ()
+            }            
         }
 
         Ok(())
     }
 
-    pub(crate) fn get_function(&self, name: &str) -> Option<&FunctionScope> {
-        match self.resources.get(name) {
+    pub(crate) fn get_resource(&self, path: &Vec<String>) -> Option<&Resource> {
+        if path.len() == 1 {
+            if let Some(res) = builtins::TYPES.get(path) {
+                return Some(res)
+            }
+        }
+        let mut module = self;
+        
+        for (index, name) in path.iter().enumerate() {
+            if index+1 == path.len() {
+                return module.resources.get(name);
+            }
+            match module.resources.get(name)? {
+                Resource::Module(Module { scope: Some(scope), .. }) => module = scope,
+                _ => return None
+            }
+        }
+
+        None
+    }
+
+    pub(crate) fn get_function(&self, path: &Vec<String>) -> Option<&FunctionScope> {
+        match self.get_resource(path) {
             Some(Resource::Function(func)) => Some(func),
             _ => None
         }
     }
 
-    pub(crate) fn get_function_head(&self, name: &str) -> Option<&FunctionHead> {
+    pub(crate) fn get_function_head(&self, name: &Vec<String>) -> Option<&FunctionHead> {
         match self.get_function(name) {
             Some(f) => Some(&f.head),
             None => {
+                if name.len() != 1 {
+                    return None;
+                }
+
                 for ext in self.externs.iter() {
-                    if let Some(func) = ext.functions.get(name) {
+                    if let Some(func) = ext.functions.get(&name[0]) {
                         return Some(func);
                     }
                 }
@@ -904,20 +929,17 @@ impl ModuleScope {
         }
     }
 
-    pub(crate) fn get_variable(&self, name: &str) -> Result<&Type, AnalysisError> {
-        match self.resources.get(name) {
+    pub(crate) fn get_variable(&self, path: &Vec<String>) -> Result<&Type, AnalysisError> {
+        match self.get_resource(path) {
             Some(Resource::Variable(v)) => Ok(v),
-            _ => Err(AnalysisError::UnknownVariable(name.to_string()))
+            _ => Err(AnalysisError::UnknownVariable(path.clone()))
         }
     }
 
-    pub fn get_type(&self, name: &String) -> Result<&TypeDefinition, AnalysisError> {
-        match self.resources.get(name) {
+    pub fn get_type(&self, path: &Vec<String>) -> Result<&TypeDefinition, AnalysisError> {
+        match self.get_resource(path) {
             Some(Resource::Type(ty)) => Ok(ty),
-            _ => match builtins::TYPES.get(name) {
-                Some(ty) => Ok(ty),
-                None => Err(AnalysisError::UnknownType(Type::Identifier(name.clone())))
-            }
+            _ => Err(AnalysisError::UnknownType(path.clone())),
         }
     }
 
@@ -937,7 +959,7 @@ impl ModuleScope {
     fn analyse_new_type(&self, ty: ast::Type) -> Type {
         match ty {
             ast::Type::Void => Type::Void,
-            ast::Type::Identifier(name) => Type::Identifier(name),
+            ast::Type::Path(name) => Type::Path(name),
             ast::Type::Reference(inner) => Type::Reference(Box::new(self.analyse_new_type(*inner))),
             // Type::Array { base, size } => Type::Array { base: Box::new(self.analyse_new_type(*base)), size },
             // Type::Function { return_type, arguments } => {
@@ -956,7 +978,7 @@ impl ModuleScope {
     fn analyse_type(&self, ty: ast::Type) -> Result<Type, AnalysisError> {
         Ok(match ty {
             ast::Type::Void => Type::Void,
-            ast::Type::Identifier(name) => Type::Identifier(self.get_type(&name).map(|_| name)?),
+            ast::Type::Path(name) => Type::Path(self.get_type(&name).map(|_| name)?),
             ast::Type::Reference(inner) => Type::Reference(Box::new(self.analyse_type(*inner)?)),
         })
     }

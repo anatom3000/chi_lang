@@ -183,7 +183,7 @@ impl Parser {
                 match token {
                     TokenData::Integer(value, signed_and_size) => Expression::Literal(self.integer(value, signed_and_size)),
                     TokenData::Float(value, size) => Expression::Literal(Literal::Float { value: value, size: size }),
-                    TokenData::Identifier(name) => self.identifier_primary(name)?,
+                    TokenData::Identifier(_) => self.identifier_primary()?,
                     TokenData::String(content) => {
                         Expression::Literal(ast::Literal::String(content))
                     }
@@ -245,13 +245,15 @@ impl Parser {
         Some(expr)
     }
 
-    fn identifier_primary(&mut self, name: String) -> Option<Expression> {
+    fn identifier_primary(&mut self) -> Option<Expression> {
+        self.current -= 1;
+        let path = self.resource_path()?;
         Some(match self.current_token() {
             Some(TokenData::LeftParen) => {
                 self.current += 1;
                 let args = self.function_call_arguments()?;
                 Expression::FunctionCall {
-                    function: name,
+                    function: path,
                     arguments: args,
                 }
             },
@@ -306,10 +308,10 @@ impl Parser {
                     }
                 }
 
-                Expression::StructInit { name, members }
+                Expression::StructInit { path, members }
             },
 
-            _ => Expression::Variable(name),
+            _ => Expression::Variable(path),
         })
     }
 
@@ -379,9 +381,8 @@ impl Parser {
 
     fn type_(&mut self) -> Option<Type> {
         let ty = match self.current_token() {
-            Some(TokenData::Identifier(name)) => {
-                self.current += 1;
-                Type::Identifier(name)
+            Some(TokenData::Identifier(_)) => {
+                Type::Path(self.resource_path()?)
             },
             Some(TokenData::Ref) => {
                 self.current += 1;
@@ -1066,14 +1067,9 @@ impl Parser {
                     self.current += 1;
                     match self.current_token() {
                         Some(TokenData::Dot) => self.current += 1,
-                        Some(TokenData::NewLine | TokenData::Semicolon) => {
-                            self.current += 1;
+                        _ => {
                             return Some(path)
                         },
-                        _ => {
-                            self.errors.push(ParserError::Expected { rule: "`.`, `;` or newline", found: self.full_current_token() });
-                            return None
-                        }
                     }
                 },
                 _ => {

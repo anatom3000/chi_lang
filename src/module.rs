@@ -67,7 +67,7 @@ impl Module {
                             } else if multiple_exists {
                                 multiple_files_module_root
                             } else {
-                                return Err(AnalysisError::UnknownModule { path })
+                                return Err(AnalysisError::UnknownModule(path))
                             };
 
 
@@ -110,7 +110,7 @@ impl Module {
     pub fn transpile(self, target_dir: PathBuf) -> Result<(), TranspileError> {
         let mut transpiled_modules = HashMap::new();
 
-        ModuleTranspiler::transpile(self.path, self.scope.expect("analysis called before transpilation"), &mut transpiled_modules);
+        ModuleTranspiler::transpile(self.path, self.scope.expect("analysis called before transpilation"), &mut transpiled_modules, self.is_main);
 
 
         for m in transpiled_modules.into_values() {
