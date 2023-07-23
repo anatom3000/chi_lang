@@ -1,4 +1,4 @@
-use std::{path::PathBuf, collections::HashMap};
+use std::{path::PathBuf, collections::HashMap, mem};
 
 use crate::{
     analysis::{Type, ExpressionData, ModuleScope, Statement, TypeKind, Resource},
@@ -12,6 +12,7 @@ pub(crate) struct ModuleTranspiler {
     header: Vec<String>,
     indent: usize,
     namespace: Vec<String>,
+    scope: ModuleScope,
     is_main: bool
 }
 
@@ -49,26 +50,25 @@ impl ModuleTranspiler {
             header: vec![],
             indent: 0,
             namespace: path.clone(),
+            scope,
             is_main
         };
 
         let mut includes = vec![];
-        for ext in scope.externs.iter() {
-            let source = ext.source.clone();
-
-            if source.starts_with('<') && source.ends_with('>') {
-                if includes.contains(&source) {
+        for ext in mem::take(&mut new.scope.externs) {
+            if ext.starts_with('<') && ext.ends_with('>') {
+                if includes.contains(&ext) {
                     continue;
                 }
 
-                includes.push(source);
+                includes.push(ext);
             } else {
-                let source = format!("\"{}\"", source);
-                if includes.contains(&source) {
+                let ext = format!("\"{}\"", ext);
+                if includes.contains(&ext) {
                     continue;
                 }
 
-                includes.push(source);
+                includes.push(ext);
             }
         }
 
@@ -87,17 +87,18 @@ impl ModuleTranspiler {
 
         new.add_new_line();
 
-        for stmt in scope.statements.iter() {
-            new.transpile_statement(&scope, stmt.clone());
+        for stmt in mem::take(&mut new.scope.statements) {
+            new.transpile_statement(stmt.clone());
         }
 
         new.add_new_header_line();
         new.add_header_line("#endif".to_string());
 
+        let resources = mem::take(&mut new.scope.resources);
+
         transpiled_modules.insert(path, new);
 
-
-        for (_, res) in scope.resources {
+        for (_, res) in resources {
             if let Resource::Module(m) = res {
                 ModuleTranspiler::transpile(m.path, m.scope.expect("analysis called before transpilation"), transpiled_modules, false)
             }
@@ -122,7 +123,7 @@ impl ModuleTranspiler {
         self.header.push(String::new())
     }
 
-    fn transpile_statement(&mut self, module: &ModuleScope, stmt: Statement) {
+    fn transpile_statement(&mut self, stmt: Statement) {
         use Statement::*;
         match stmt {
             Expression(expr) => {
@@ -144,7 +145,7 @@ impl ModuleTranspiler {
                 // self.add_new_line();
             }
             FunctionDeclaration { name } => {
-                let func = module.get_function(&vec![name.clone()]).expect("declared function exists").clone();
+                let func = self.scope.get_function(&name).expect("declared function exists").clone();
                 
                 let mut args = func
                     .head
@@ -165,7 +166,7 @@ impl ModuleTranspiler {
                 self.indent += 1;
 
                 for stmt in func.statements {
-                    self.transpile_statement(module, stmt)
+                    self.transpile_statement(stmt)
                 }
 
                 self.indent -= 1;
@@ -174,13 +175,11 @@ impl ModuleTranspiler {
                 self.add_new_line();
             },
             StructDeclaration { name } => {
-                let name = self.to_absolute_path(name);
 
-                let TypeKind::Struct {members} = module.get_type(&name).expect("declared struct exists").kind.clone()
+                let TypeKind::Struct {members} = self.scope.get_type(&vec![name.clone()]).expect("declared struct exists").kind.clone()
                     else { unreachable!("defined struct should have struct type ") };
 
-
-                let struct_name = name.join("_");
+                let struct_name = self.to_absolute_path(name).join("_");
                 self.add_header_line(format!("typedef struct {struct_name} {struct_name};"));
                 self.add_line(format!("typdef struct {struct_name} {{"));
                 self.indent += 1;
@@ -209,7 +208,7 @@ impl ModuleTranspiler {
 
                     self.indent += 1;
                     for stmt in body {
-                        self.transpile_statement(module, stmt);
+                        self.transpile_statement(stmt);
                     }
                     self.indent -= 1;
                 }
@@ -218,7 +217,7 @@ impl ModuleTranspiler {
                     self.add_line("} else {".to_string());
                     self.indent += 1;
                     for stmt in body {
-                        self.transpile_statement(module, stmt)
+                        self.transpile_statement(stmt)
                     }
                     self.indent -= 1;
                 }
@@ -231,7 +230,7 @@ impl ModuleTranspiler {
 
                 self.indent += 1;
                 for stmt in body {
-                    self.transpile_statement(module, stmt);
+                    self.transpile_statement(stmt);
                 }
                 self.indent -= 1;
 
@@ -310,7 +309,7 @@ impl ModuleTranspiler {
     fn transpile_declaration(&mut self, type_: Type, variable: String) -> String {
         match type_ {
             Type::Void => format!("void {variable}", ),
-            Type::Path(name) => format!("{} {variable}", transpile_primitive_type(self.transpile_path(&name))),
+            Type::Path(name) => format!("{} {variable}", self.transpile_type(self.transpile_path(&name))),
             Type::Reference(inner) => {
                 match *inner {
                     Type::Void | Type::Path(_) | Type::Reference(_) => self.transpile_declaration(*inner, format!("*{variable}")),
@@ -337,33 +336,35 @@ impl ModuleTranspiler {
         ns.push(path);
         ns
     }
+
+    fn transpile_type(&self, name: String) -> String {
+        match name.as_str() {
+            "int" => "int".to_string(),
+            "float" => "double".to_string(),
+            "bool" => "_Bool".to_string(),
+    
+            "int8" => "int8_t".to_string(),
+            "uint8" => "uint8_t".to_string(),
+            "int16" => "int16_t".to_string(),
+            "uint16" => "uint16_t".to_string(),
+            "int32" => "int32_t".to_string(),
+            "uint32" => "int32_t".to_string(),
+            "int64" => "uint64_t".to_string(),
+            "uint64" => "uint64_t".to_string(),
+    
+            "float32" => "float".to_string(),
+            "float64" => "double".to_string(),
+            "float128" => "long double".to_string(),
+    
+            "usize" => "size_t".to_string(),
+            "isize" => "ptrdiff_t".to_string(),
+    
+            other => self.transpile_path(&self.to_absolute_path(other.to_string()))
+        }
+    }
+    
 }
 
-fn transpile_primitive_type(from: String) -> String {
-    match from.as_str() {
-        "int" => "int",
-        "float" => "double",
-        "bool" => "_Bool",
-
-        "int8" => "int8_t",
-        "uint8" => "uint8_t",
-        "int16" => "int16_t",
-        "uint16" => "uint16_t",
-        "int32" => "int32_t",
-        "uint32" => "int32_t",
-        "int64" => "uint64_t",
-        "uint64" => "uint64_t",
-
-        "float32" => "float",
-        "float64" => "double",
-        "float128" => "long double",
-
-        "usize" => "size_t",
-        "isize" => "ptrdiff_t",
-
-        other => other
-    }.to_string()
-}
 
 impl ModuleTranspiler {
     pub fn source(&self) -> String {

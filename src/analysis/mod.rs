@@ -15,6 +15,7 @@ pub mod builtins;
 pub enum AnalysisError {
     UnknownBinaryOperator(lexer::TokenData),
     UnknownUnaryOperator(lexer::TokenData),
+    UnknownResource(Vec<String>),
     UnknownFunction(Vec<String>),
     UnknownVariable(Vec<String>),
     UnknownType(Vec<String>),
@@ -321,17 +322,19 @@ pub struct FunctionScope {
 }
 
 impl FunctionScope {
-    fn get_function_head<'a>(&'a self, module: &'a ModuleScope, name: &Vec<String>) -> Option<&FunctionHead> {
+    fn get_function_head<'a>(&'a self, module: &'a ModuleScope, name: &Vec<String>) -> Result<FunctionHead, AnalysisError> {
         module.get_function_head(name)
     }
 
-    fn get_variable<'a>(&'a self, module: &'a ModuleScope, path: &Vec<String>) -> Result<&Type, AnalysisError> {
-        if path.len() == 1 {
-            if let Some(ty) = self.variables.get(&path[0]) {
-                return Ok(ty)
-            }
+    fn get_variable<'a>(&'a self, module: &'a ModuleScope, path: &Vec<String>) -> Result<Type, AnalysisError> {
+        match self.variables.get(&path[0]) {
+            Some(ty) if path.len() == 1 => return Ok(ty.clone()),
+            Some(ty) => match module.get_struct_member(ty, &path[1..])? {
+                Resource::Variable(ty) => Ok(ty),
+                _ => unreachable!(),
+            },
+            None => module.get_variable(path)
         }
-        module.get_variable(path)
     }
 
     fn execution_pass(&mut self, module: &ModuleScope) -> Result<(), AnalysisError> {
@@ -575,10 +578,7 @@ impl FunctionScope {
                 function: function_name,
                 arguments,
             } => {
-                let function = match self.get_function_head(module, &function_name) {
-                    Some(func) => func.clone(),
-                    None => return Err(AnalysisError::UnknownFunction(function_name)),
-                };
+                let function = self.get_function_head(module, &function_name)?;
 
                 let mut typed_args = vec![];
                 if function.is_variadic {
@@ -699,15 +699,10 @@ impl FunctionScope {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct ExternScope {
-    pub(crate) source: String,
-    pub(crate) functions: HashMap<String, FunctionHead>,
-}
 
 #[derive(Debug, Clone)]
 pub(crate) enum Resource {
-    Function(FunctionScope),
+    Function(FunctionHead),
     Type(TypeDefinition),
     Variable(Type),
     #[allow(dead_code)]
@@ -718,13 +713,13 @@ pub(crate) enum Resource {
 pub(crate) struct ModuleScope {
     source: Vec<ast::Statement>,
     pub(crate) statements: Vec<Statement>,
+    declared_functions: HashMap<String, FunctionScope>,
     pub(crate) resources: HashMap<String, Resource>,
-    pub(crate) externs: Vec<ExternScope>,
+    pub(crate) externs: Vec<String>,
 }
 
 impl ModuleScope {
     pub(crate) fn declaration_pass(&mut self, module: &Module) -> Result<(), AnalysisError> {
-        let mut declared_functions = HashMap::new();
 
         for stmt in self.source.clone() {
             match stmt {
@@ -761,17 +756,15 @@ impl ModuleScope {
                         is_variadic: false,
                     };
 
-                    let func = FunctionScope::new(body, head);
+                    let func = FunctionScope::new(body, head.clone());
 
-                    self.resources.insert(name.clone(), Resource::Function(func.clone()));
-
-                    declared_functions.insert(name.clone(), func);
+                    self.resources.insert(name.clone(), Resource::Function(head));
+                    self.declared_functions.insert(name.clone(), func);
 
                     self.statements
                         .push(Statement::FunctionDeclaration { name })
                 }
                 ast::Statement::ExternBlock { source, body } => {
-                    let mut functions = HashMap::new();
                     for stmt in body {
                         match stmt {
                             ast::Statement::ExternFunctionDeclaration {
@@ -792,8 +785,9 @@ impl ModuleScope {
                                     arguments,
                                     is_variadic,
                                 };
+                                
 
-                                functions.insert(name, func);
+                                self.resources.insert(name, Resource::Function(func));
                             }
                             _ => unreachable!(
                                 "extern blocks should only contain body-less function declarations"
@@ -801,7 +795,7 @@ impl ModuleScope {
                         }
                     }
 
-                    self.externs.push(ExternScope { source, functions })
+                    self.externs.push(source)
                 }
                 ast::Statement::LetAssignment {
                     name,
@@ -872,73 +866,85 @@ impl ModuleScope {
     pub(crate) fn execution_pass(&mut self) -> Result<(), AnalysisError> {
         let module = self.clone();
 
-        for (_, res) in self.resources.iter_mut() {
-            match res {
-                Resource::Function(func) => func.execution_pass(&module)?,
-                Resource::Module(m) => m.execution_pass()?,
-                _ => ()
-            }            
+        for func in self.declared_functions.values_mut() {
+            func.execution_pass(&module)?;
+        }
+
+        for res in self.resources.values_mut() {
+            if let Resource::Module(m) = res {
+                m.execution_pass()?;
+            }
         }
 
         Ok(())
     }
 
-    pub(crate) fn get_resource(&self, path: &Vec<String>) -> Option<&Resource> {
+    pub(crate) fn get_resource(&self, path: &Vec<String>) -> Result<Resource, AnalysisError> {
         if path.len() == 1 {
             if let Some(res) = builtins::TYPES.get(path) {
-                return Some(res)
+                return Ok(res.clone())
             }
         }
         let mut module = self;
         
         for (index, name) in path.iter().enumerate() {
             if index+1 == path.len() {
-                return module.resources.get(name);
+                return module.resources.get(name).cloned()
+                    .ok_or_else(|| AnalysisError::UnknownResource(path.clone()));
             }
-            match module.resources.get(name)? {
+            match module.resources.get(name).ok_or_else(|| AnalysisError::UnknownResource(path.clone()))? {
                 Resource::Module(Module { scope: Some(scope), .. }) => module = scope,
-                _ => return None
+                Resource::Variable(ty) => return self.get_struct_member(ty, &path[index+1..]),
+                _ => return Err(AnalysisError::UnknownResource(path.clone()))
             }
         }
 
-        None
+        Err(AnalysisError::UnknownResource(path.clone()))
     }
 
-    pub(crate) fn get_function(&self, path: &Vec<String>) -> Option<&FunctionScope> {
-        match self.get_resource(path) {
-            Some(Resource::Function(func)) => Some(func),
-            _ => None
+    pub(crate) fn get_struct_member(&self, ty: &Type, path: &[String]) -> Result<Resource, AnalysisError> {
+        let typedef = match ty {
+            Type::Path(path) => self.get_type(path)?,
+            _ => return Err(AnalysisError::MemberAccessOnNonStruct { instance_type: ty.clone(), member: path[0].clone() })
+        };
+        match typedef.kind {
+            TypeKind::Struct { members } => {
+                match members.get(&path[0]) {
+                    Some(member) => {
+                        if path.len() == 1 {
+                            Ok(Resource::Variable(member.clone()))
+                        } else {
+                            self.get_struct_member(member, &path[1..])
+                        }
+                    },
+                    None => Err(AnalysisError::UnknownMember { instance_type: ty.clone(), member: path[0].clone() })
+                }
+            },
+            _ => Err(AnalysisError::MemberAccessOnNonStruct { instance_type: ty.clone(), member: path[0].clone() })
+        } 
+    }
+
+    pub(crate) fn get_function(&self, name: &String) -> Result<&FunctionScope, AnalysisError> {
+        self.declared_functions.get(name).ok_or(AnalysisError::UnknownFunction(vec![name.clone()]))
+    }
+
+    pub(crate) fn get_function_head(&self, path: &Vec<String>) -> Result<FunctionHead, AnalysisError> {
+        match self.get_resource(path)? {
+            Resource::Function(func) => Ok(func),
+            _ => Err(AnalysisError::UnknownFunction(path.clone()))
         }
     }
 
-    pub(crate) fn get_function_head(&self, name: &Vec<String>) -> Option<&FunctionHead> {
-        match self.get_function(name) {
-            Some(f) => Some(&f.head),
-            None => {
-                if name.len() != 1 {
-                    return None;
-                }
-
-                for ext in self.externs.iter() {
-                    if let Some(func) = ext.functions.get(&name[0]) {
-                        return Some(func);
-                    }
-                }
-                None
-            }
-        }
-    }
-
-    pub(crate) fn get_variable(&self, path: &Vec<String>) -> Result<&Type, AnalysisError> {
-        match self.get_resource(path) {
-            Some(Resource::Variable(v)) => Ok(v),
+    pub(crate) fn get_variable(&self, path: &Vec<String>) -> Result<Type, AnalysisError> {
+        match self.get_resource(path)? {
+            Resource::Variable(v) => Ok(v),
             _ => Err(AnalysisError::UnknownVariable(path.clone()))
         }
     }
 
-    pub fn get_type(&self, path: &Vec<String>) -> Result<&TypeDefinition, AnalysisError> {
-        match self.get_resource(path) {
-            Some(Resource::Type(ty)) => Ok(ty),
+    pub fn get_type(&self, path: &Vec<String>) -> Result<TypeDefinition, AnalysisError> {
+        match self.get_resource(path)? {
+            Resource::Type(ty) => Ok(ty),
             _ => Err(AnalysisError::UnknownType(path.clone())),
         }
     }
@@ -948,6 +954,7 @@ impl ModuleScope {
             source,
             statements: vec![],
             resources: HashMap::new(),
+            declared_functions: HashMap::new(),
             externs: vec![],
         }
     }
