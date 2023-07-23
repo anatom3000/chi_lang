@@ -253,7 +253,7 @@ impl Expression {
 pub(crate) struct FunctionHead {
     pub(crate) return_type: Type,
     pub(crate) arguments: Vec<(String, Type)>,
-    pub(crate) is_variadic: bool,
+    pub(crate) is_variadic: Option<bool>,
 }
 
 
@@ -581,7 +581,7 @@ impl FunctionScope {
                 let function = self.get_function_head(module, &function_name)?;
 
                 let mut typed_args = vec![];
-                if function.is_variadic {
+                if let Some(true) = function.is_variadic {
                     if function.arguments.len() > arguments.len() {
                         return Err(AnalysisError::WrongArgumentCount {
                             function: function_name,
@@ -753,7 +753,7 @@ impl ModuleScope {
                     let head = FunctionHead {
                         return_type,
                         arguments,
-                        is_variadic: false,
+                        is_variadic: None,
                     };
 
                     let func = FunctionScope::new(body, head.clone());
@@ -783,7 +783,7 @@ impl ModuleScope {
                                 let func = FunctionHead {
                                     return_type,
                                     arguments,
-                                    is_variadic,
+                                    is_variadic: Some(is_variadic),
                                 };
                                 
 
@@ -960,7 +960,7 @@ impl ModuleScope {
     }
 
     fn type_expression(&self, expression: ast::Expression) -> Result<Expression, AnalysisError> {
-        FunctionScope::new(vec![], FunctionHead { return_type: Type::Void, arguments: vec![], is_variadic: false }).type_expression(self, expression)
+        FunctionScope::new(vec![], FunctionHead { return_type: Type::Void, arguments: vec![], is_variadic: None }).type_expression(self, expression)
     }
 
     fn analyse_new_type(&self, ty: ast::Type) -> Type {

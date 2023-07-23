@@ -159,7 +159,9 @@ impl ModuleTranspiler {
                     args = "void".to_string();
                 }
 
-                let func_name = if self.is_main && name == "main" { "main".to_string() } else { self.to_absolute_path(name).join("_") };
+                // don't "namespacify" the function name if function is the main function or an extern function
+                let func_name = if self.is_main && name == "main" { name } 
+                                        else { self.to_absolute_path(name).join("_") };
                 let declaration = self.transpile_declaration(func.head.return_type, format!("{func_name}({args})"));
                 self.add_header_line(format!("{declaration};"));
                 self.add_line(format!("{declaration} {{"));
@@ -268,7 +270,9 @@ impl ModuleTranspiler {
                 function,
                 arguments,
             } => {
-                let function = self.transpile_path(&function);
+                let head = self.scope.get_function_head(&function).expect("called function exists");
+                let function = if head.is_variadic.is_some() { function.last().expect("path is not empty").clone() } 
+                                   else {self.transpile_path(&function)};
                 let args = arguments
                     .into_iter()
                     .map(|e| self.transpile_expression(e.data))
