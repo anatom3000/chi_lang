@@ -51,6 +51,7 @@ impl Module {
         single_file_module.set_extension("chi");
 
         let mut multiple_files_module_root = file.clone();
+        multiple_files_module_root.pop();
         multiple_files_module_root.push(end.clone());
         multiple_files_module_root.push(end.clone());
         multiple_files_module_root.set_extension("chi");
