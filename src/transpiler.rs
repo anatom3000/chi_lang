@@ -183,7 +183,7 @@ impl ModuleTranspiler {
 
                 let struct_name = self.to_absolute_path(name).join("_");
                 self.add_header_line(format!("typedef struct {struct_name} {struct_name};"));
-                self.add_line(format!("typdef struct {struct_name} {{"));
+                self.add_line(format!("typedef struct {struct_name} {{"));
                 self.indent += 1;
                 for (m_name, m_type) in members {
                     let decl = self.transpile_declaration(m_type, m_name);
@@ -248,7 +248,7 @@ impl ModuleTranspiler {
                 };
             },
             Import(path) => {
-                self.add_header_line(format!("#include \"{}.h\"", path.join("/")))
+                self.add_header_line(format!("#include \"{}.h\"", path[1..].join("/")))
             }
         }
     }
@@ -378,4 +378,43 @@ impl ModuleTranspiler {
     pub fn header(&self) -> String {
         self.header.join("\n").trim().to_string()
     }
+}
+
+pub(crate) fn generate_makefile(module_name: &str, files: &[String]) -> String {
+    // base makefile credit: https://makefiletutorial.com/#makefile-cookbook
+    format!("
+TARGET_EXEC := {}
+BUILD_DIR := ./build
+
+SRCS := {}
+TARGET_EXEC := final_program
+
+BUILD_DIR := ./build
+SRC_DIRS := ./src
+
+OBJS := $(SRCS:%=$(BUILD_DIR)/%.o)
+
+# String substitution (suffix version without %).
+# As an example, ./build/hello.cpp.o turns into ./build/hello.cpp.d
+DEPS := $(OBJS:.o=.d)
+
+INC_DIRS := .
+INC_FLAGS := $(addprefix -I,$(INC_DIRS))
+
+CPPFLAGS := $(INC_FLAGS) -MMD -MP
+
+$(BUILD_DIR)/$(TARGET_EXEC): $(OBJS)
+	$(CXX) $(OBJS) -o $@ $(LDFLAGS)
+
+$(BUILD_DIR)/%.c.o: %.c
+	mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+.PHONY: clean
+clean:
+	rm -r $(BUILD_DIR)
+
+-include $(DEPS)
+",
+    module_name, files.join(" "))
 }

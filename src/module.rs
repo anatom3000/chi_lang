@@ -1,6 +1,6 @@
 use std::{fmt, path::PathBuf, ffi::OsStr, fs, collections::HashMap};
 
-use crate::{TranspileError, ast, parser, analysis::{ModuleScope, AnalysisError}, transpiler::ModuleTranspiler};
+use crate::{TranspileError, ast, parser, analysis::{ModuleScope, AnalysisError}, transpiler::{ModuleTranspiler, generate_makefile}};
 
 #[derive(Debug, Clone)]
 pub(crate) struct Module {
@@ -109,13 +109,16 @@ impl Module {
 
     pub fn transpile(self, target_dir: PathBuf) -> Result<(), TranspileError> {
         let mut transpiled_modules = HashMap::new();
+        let module_name = &self.path[0].clone();
 
         ModuleTranspiler::transpile(self.path, self.scope.expect("analysis called before transpilation"), &mut transpiled_modules, self.is_main);
 
-
+        let mut files = vec![];
         for m in transpiled_modules.into_values() {
             let source = m.source();
             let header = m.header();
+
+            files.push(format!("./{}", m.source_path.display()));
 
             let source_path = target_dir.join(m.source_path);
             let header_path = target_dir.join(m.header_path);
@@ -124,6 +127,11 @@ impl Module {
             fs::write(source_path, source).map_err(|e| TranspileError::FileError(e))?;
             fs::write(header_path, header).map_err(|e| TranspileError::FileError(e))?;
         }
+
+        let makefile_path = target_dir.join("Makefile");
+        let makefile_contents = generate_makefile(module_name, &files);
+
+        fs::write(makefile_path, makefile_contents).map_err(|e| TranspileError::FileError(e))?;
 
         Ok(())
     }

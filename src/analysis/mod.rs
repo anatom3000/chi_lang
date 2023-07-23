@@ -227,7 +227,10 @@ pub struct Expression {
 impl Expression {
     fn type_lhs(&self, scope: &FunctionScope, module: &ModuleScope) -> Result<Type, AnalysisError> {
         match &self.data {
-            ExpressionData::Variable(name) => Ok(scope.get_variable(module, name)?.clone()),
+            ExpressionData::Variable(name) => Ok(match scope.get_variable(module, name)? {
+                VariableOrAttribute::Attribute(expr) => expr.type_,
+                VariableOrAttribute::Variable(ty) => ty
+            }),
             ExpressionData::StructMember { instance, member } => {
                 let instance_type = module.get_type(match &instance.type_ {
                     Type::Path(path) => path,
@@ -311,13 +314,16 @@ pub(crate) enum Statement {
     Import(Vec<String>)
 }
 
+pub(crate) enum VariableOrAttribute {
+    Variable(Type),
+    Attribute(Expression)
+}
+
 #[derive(Clone, Debug)]
 pub struct FunctionScope {
     pub(crate) head: FunctionHead,
     pub(crate) source: Vec<ast::Statement>,
     pub(crate) statements: Vec<Statement>,
-    // TODO: custom F
-    // types: HashMap<String, Type>,
     pub(crate) variables: HashMap<String, Type>,
 }
 
@@ -326,13 +332,18 @@ impl FunctionScope {
         module.get_function_head(name)
     }
 
-    fn get_variable<'a>(&'a self, module: &'a ModuleScope, path: &Vec<String>) -> Result<Type, AnalysisError> {
+    fn get_variable<'a>(&'a self, module: &'a ModuleScope, path: &Vec<String>) -> Result<VariableOrAttribute, AnalysisError> {
         match self.variables.get(&path[0]) {
-            Some(ty) if path.len() == 1 => return Ok(ty.clone()),
-            Some(ty) => match module.get_struct_member(ty, &path[1..])? {
-                Resource::Variable(ty) => Ok(ty),
-                _ => unreachable!(),
-            },
+            Some(ty) if path.len() == 1 => return Ok(VariableOrAttribute::Variable(ty.clone())),
+            Some(ty) => Ok(VariableOrAttribute::Attribute(
+                module.get_struct_member(
+                    Expression { 
+                            data: ExpressionData::Variable(vec![path[0].clone()]), 
+                            type_: ty.clone()
+                        }, 
+                        &path[1..]
+                )?
+            )),
             None => module.get_variable(path)
         }
     }
@@ -639,9 +650,9 @@ impl FunctionScope {
                     type_: function.return_type,
                 })
             }
-            ast::Expression::Variable(name) => Ok(Expression {
-                type_: self.get_variable(module, &name)?.clone(),
-                data: ExpressionData::Variable(name),
+            ast::Expression::Variable(name) => Ok(match self.get_variable(module, &name)? {
+                VariableOrAttribute::Variable(var_type) => Expression { data: ExpressionData::Variable(name), type_: var_type },
+                VariableOrAttribute::Attribute(expr) => expr
             }),
             ast::Expression::StructMember { instance, member } => {
                 let instance = self.type_expression(module, *instance)?;
@@ -894,7 +905,6 @@ impl ModuleScope {
             }
             match module.resources.get(name).ok_or_else(|| AnalysisError::UnknownResource(path.clone()))? {
                 Resource::Module(Module { scope: Some(scope), .. }) => module = scope,
-                Resource::Variable(ty) => return self.get_struct_member(ty, &path[index+1..]),
                 _ => return Err(AnalysisError::UnknownResource(path.clone()))
             }
         }
@@ -902,25 +912,64 @@ impl ModuleScope {
         Err(AnalysisError::UnknownResource(path.clone()))
     }
 
-    pub(crate) fn get_struct_member(&self, ty: &Type, path: &[String]) -> Result<Resource, AnalysisError> {
-        let typedef = match ty {
-            Type::Path(path) => self.get_type(path)?,
-            _ => return Err(AnalysisError::MemberAccessOnNonStruct { instance_type: ty.clone(), member: path[0].clone() })
+    pub(crate) fn get_variable(&self, path: &Vec<String>) -> Result<VariableOrAttribute, AnalysisError> {
+        if let Some(Resource::Variable(var_type)) = builtins::TYPES.get(&path[..0]) {
+            return Ok(VariableOrAttribute::Attribute(
+                self.get_struct_member(
+                    Expression { 
+                            data: ExpressionData::Variable(Vec::from(&path[..0])), 
+                            type_: var_type.clone()
+                        }, 
+                        &path[1..]
+                )?
+            ));
+        }
+
+        let mut module = self;
+
+        for (index, name) in path.iter().enumerate() {
+            match module.resources.get(name).ok_or_else(|| AnalysisError::UnknownResource(path.clone()))? {
+                Resource::Module(Module { scope: Some(scope), .. }) => module = scope,
+                Resource::Variable(var_type) if index+1 == path.len() => return Ok(VariableOrAttribute::Variable(var_type.clone())),
+                Resource::Variable(var_type) => return Ok(VariableOrAttribute::Attribute(
+                    module.get_struct_member(
+                        Expression { 
+                                data: ExpressionData::Variable(Vec::from(&path[..=index])), 
+                                type_: var_type.clone()
+                            }, 
+                            &path[1..]
+                    )?
+                )),
+                _ => return Err(AnalysisError::UnknownResource(path.clone()))
+            }
+        }
+
+        Err(AnalysisError::UnknownVariable(path.clone()))
+    }
+
+    pub(crate) fn get_struct_member(&self, instance: Expression, path: &[String]) -> Result<Expression, AnalysisError> {
+        let typedef = match instance.type_ {
+            Type::Path(ref path) => self.get_type(path)?,
+            _ => return Err(AnalysisError::MemberAccessOnNonStruct { instance_type: instance.type_.clone(), member: path[0].clone() })
         };
         match typedef.kind {
             TypeKind::Struct { members } => {
                 match members.get(&path[0]) {
                     Some(member) => {
+                        let instance = Expression {
+                            data: ExpressionData::StructMember { instance: Box::new(instance), member: path[0].clone() }, 
+                            type_: member.clone()
+                        };
                         if path.len() == 1 {
-                            Ok(Resource::Variable(member.clone()))
+                            Ok(instance)
                         } else {
-                            self.get_struct_member(member, &path[1..])
+                            self.get_struct_member(instance, &path[1..])
                         }
                     },
-                    None => Err(AnalysisError::UnknownMember { instance_type: ty.clone(), member: path[0].clone() })
+                    None => Err(AnalysisError::UnknownMember { instance_type: instance.type_.clone(), member: path[0].clone() })
                 }
             },
-            _ => Err(AnalysisError::MemberAccessOnNonStruct { instance_type: ty.clone(), member: path[0].clone() })
+            _ => Err(AnalysisError::MemberAccessOnNonStruct { instance_type: instance.type_.clone(), member: path[0].clone() })
         } 
     }
 
@@ -932,13 +981,6 @@ impl ModuleScope {
         match self.get_resource(path)? {
             Resource::Function(func) => Ok(func),
             _ => Err(AnalysisError::UnknownFunction(path.clone()))
-        }
-    }
-
-    pub(crate) fn get_variable(&self, path: &Vec<String>) -> Result<Type, AnalysisError> {
-        match self.get_resource(path)? {
-            Resource::Variable(v) => Ok(v),
-            _ => Err(AnalysisError::UnknownVariable(path.clone()))
         }
     }
 
