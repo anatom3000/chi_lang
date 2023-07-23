@@ -1,0 +1,24 @@
+def main() {
+    // integer
+    let almost_pi = 3  // type: int
+    let one = 1i       // type: int
+    let almost_e = 2u  // type: uint
+    let life = 42u32   // type: uint32
+    let zero = 0i16    // type: int16
+
+    // float
+    let pi = 3.14                      // type: float
+    let also_pi = 3.14f                // type: float
+    let pi_but_less_precise = 3.14f32  // type: float32
+    let pi_but_more_precise = 3.14f128 // type: float128
+
+    // string
+    let message = "Hello, Chi!" // type: &char (arrays are not implemented yet)
+
+    // bool
+    let the_truth = true
+    let is_chi_good = false
+
+    // special
+    let billion_dollar_mistake = null
+}

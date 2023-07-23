@@ -1,0 +1,8 @@
+import .math
+import .utils
+
+def main() {
+    let a = add(3, add(2, 4));
+
+    print("wow!")
+}

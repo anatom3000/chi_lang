@@ -1,0 +1,23 @@
+def spicy_add(a: int, b: int) -> int {
+    
+    let countdown = 3
+    while countdown != 0 {
+        printf("Adding in %i", countdown)
+        i = i - 1
+    }
+
+    if a > b {
+        let only_inside_if = 42
+        a = a - 1
+        b = b + 2
+    } elif b == a {
+        b = 2 * b
+    } elif a < b {
+        printf("BUG: my_variable (%i) does not exist but analysis says it does --> ", only_inside_if)
+    } else {
+        // unreachable
+        printf("yikes")
+    }
+
+    return a + b
+}

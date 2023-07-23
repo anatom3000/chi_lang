@@ -1,7 +1,10 @@
-def myfunk() {
-    otherfunk()
+def fib(n: int) -> int {
+    if n < 2 {
+        return 1
+    }
+    return fib(n-1) + fib(n-2)
 }
 
-def otherfunk() {
-    myfunk()
+def main() {
+    printf("fib(9) = %i", fib(9))
 }

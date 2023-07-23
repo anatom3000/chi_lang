@@ -1,0 +1,23 @@
+def main() {
+    let a = 1
+    let b = 2
+
+    // newlines are meaningful
+    let my_variable = a 
+    +b // seperate statement
+
+    // new lines are ignored between parentheses
+    let myvar2 = (a
+        +b
+    )
+
+    // escaping a newline with a `\` makes the lexer ignore all newlines until a semicolon is found
+    let very_long = a * b \
+        + a
+        + b
+        // lets add an extra one for flavor 
+        + 1;
+    // new statement since previous one was ended by a semicolon
+    // newlines are meaningful again
+    +b
+}

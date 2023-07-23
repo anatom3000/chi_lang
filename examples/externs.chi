@@ -1,0 +1,14 @@
+// import the C standard library
+extern "<stdio.h>" {
+    def printf(fmt_str: &char, ...)
+}
+
+// import other C libraries too!
+extern "raylib.h" {
+    def GetScreenWidth() -> int
+    def GetScreenHeight() -> int
+}
+
+def main() {
+    printf("Window size is (%i, %i)", GetScreenWidth(), GetScreenHeight())
+}

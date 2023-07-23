@@ -1,0 +1,7 @@
+def main() {
+    let message = "Hello, World!"
+    message = "the message is actually: Hello, Chi!"
+
+    // error: expected type `&char` found type `int`
+    message = 42
+}

@@ -1,0 +1,37 @@
+extern "<stdio.h>" {
+    def printf(fmt_str: &char, ...)
+}
+
+struct Point {
+    x: float,
+    y: float,
+}
+
+
+struct Line {
+    start: Point,
+    end: Point
+}
+
+def main() {
+    let origin = Point {
+        x: 1.0,
+        y: -1.0
+    }
+
+    // we misplaced the origin, let's fix it!
+    // structs are mutable
+    origin.x = 0.0
+    origin.y = 0.0
+    
+    // of course we can access struct attributes
+    printf("The origin is at (%f, %f).\n", origin.x, origin.y)
+
+    let unit = Line {
+        start: Point { x: 0.0, y: 0.0 },
+        end:   Point { x: 1.0, y: 1.0 },
+    }
+
+    printf("The line starts at (%f, %f), ends at (%f, %f).\n", unit.start.x, unit.start.y, unit.end.x, unit.end.y)
+
+}
