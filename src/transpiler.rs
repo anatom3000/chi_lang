@@ -161,7 +161,7 @@ impl ModuleTranspiler {
 
                 // don't "namespacify" the function name if function is the main function or an extern function
                 let func_name = if self.is_main && name == "main" { name } 
-                                        else { self.to_absolute_path(name).join("_") };
+                                        else { self.transpile_path(&self.to_absolute_path(vec![name])) };
                 let declaration = self.transpile_declaration(func.head.return_type, format!("{func_name}({args})"));
                 self.add_header_line(format!("{declaration};"));
                 self.add_line(format!("{declaration} {{"));
@@ -181,7 +181,7 @@ impl ModuleTranspiler {
                 let TypeKind::Struct {members} = self.scope.get_type(&vec![name.clone()]).expect("declared struct exists").kind.clone()
                     else { unreachable!("defined struct should have struct type ") };
 
-                let struct_name = self.to_absolute_path(name).join("_");
+                let struct_name = self.transpile_path(&self.to_absolute_path(vec![name]));
                 self.add_header_line(format!("typedef struct {struct_name} {struct_name};"));
                 self.add_line(format!("typedef struct {struct_name} {{"));
                 self.indent += 1;
@@ -305,7 +305,7 @@ impl ModuleTranspiler {
                 .collect::<Vec<_>>()
                 .join(", ");
 
-                format!("({}) {{ {members} }}", self.transpile_path(&path))
+                format!("({}) {{ {members} }}", self.transpile_type(path))
             }
         }
     }
@@ -313,7 +313,7 @@ impl ModuleTranspiler {
     fn transpile_declaration(&mut self, type_: Type, variable: String) -> String {
         match type_ {
             Type::Void => format!("void {variable}", ),
-            Type::Path(name) => format!("{} {variable}", self.transpile_type(self.transpile_path(&name))),
+            Type::Path(path) => format!("{} {variable}", self.transpile_type(path)),
             Type::Reference(inner) => {
                 match *inner {
                     Type::Void | Type::Path(_) | Type::Reference(_) => self.transpile_declaration(*inner, format!("*{variable}")),
@@ -335,35 +335,40 @@ impl ModuleTranspiler {
         path.join("_")
     }
 
-    fn to_absolute_path(&self, path: String) -> Vec<String> {
+    fn to_absolute_path(&self, mut path: Vec<String>) -> Vec<String> {
         let mut ns = self.namespace.clone();
-        ns.push(path);
+        ns.append(&mut path);
         ns
     }
 
-    fn transpile_type(&self, name: String) -> String {
-        match name.as_str() {
-            "int" => "int".to_string(),
-            "float" => "double".to_string(),
-            "bool" => "_Bool".to_string(),
+    fn transpile_type(&self, path: Vec<String>) -> String {
+        if path.len() == 1 {
+            match path[0].as_str() {
+                "int" => "int",
+                "float" => "double",
+                "bool" => "_Bool",
+        
+                "int8" => "int8_t",
+                "uint8" => "uint8_t",
+                "int16" => "int16_t",
+                "uint16" => "uint16_t",
+                "int32" => "int32_t",
+                "uint32" => "int32_t",
+                "int64" => "uint64_t",
+                "uint64" => "uint64_t",
+        
+                "float32" => "float",
+                "float64" => "double",
+                "float128" => "long double",
+        
+                "usize" => "size_t",
+                "isize" => "ptrdiff_t",
+        
+                other => other
+            }.to_string()
     
-            "int8" => "int8_t".to_string(),
-            "uint8" => "uint8_t".to_string(),
-            "int16" => "int16_t".to_string(),
-            "uint16" => "uint16_t".to_string(),
-            "int32" => "int32_t".to_string(),
-            "uint32" => "int32_t".to_string(),
-            "int64" => "uint64_t".to_string(),
-            "uint64" => "uint64_t".to_string(),
-    
-            "float32" => "float".to_string(),
-            "float64" => "double".to_string(),
-            "float128" => "long double".to_string(),
-    
-            "usize" => "size_t".to_string(),
-            "isize" => "ptrdiff_t".to_string(),
-    
-            other => self.transpile_path(&self.to_absolute_path(other.to_string()))
+        } else {
+            self.transpile_path(&self.to_absolute_path(path))
         }
     }
     
