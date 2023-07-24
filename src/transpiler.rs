@@ -182,17 +182,16 @@ impl ModuleTranspiler {
                     else { unreachable!("defined struct should have struct type ") };
 
                 let struct_name = self.transpile_path(&self.to_absolute_path(vec![name]));
-                self.add_header_line(format!("typedef struct {struct_name} {struct_name};"));
-                self.add_line(format!("typedef struct {struct_name} {{"));
+                self.add_header_line(format!("typedef struct {struct_name} {{"));
                 self.indent += 1;
                 for (m_name, m_type) in members {
                     let decl = self.transpile_declaration(m_type, m_name);
-                    self.add_line(format!("{decl};"));
+                    self.add_header_line(format!("{decl};"));
                 }
                 self.indent -= 1;
 
-                self.add_line(format!("}} {struct_name};"));
-                self.add_new_line();
+                self.add_header_line(format!("}} {struct_name};"));
+                self.add_new_header_line();
             },
             If {
                 conditions_and_bodies,
@@ -272,7 +271,7 @@ impl ModuleTranspiler {
             } => {
                 let head = self.scope.get_function_head(&function).expect("called function exists");
                 let function = if head.is_variadic.is_some() { function.last().expect("path is not empty").clone() } 
-                                   else {self.transpile_path(&function)};
+                                   else {self.transpile_path(&self.to_absolute_path(function))};
                 let args = arguments
                     .into_iter()
                     .map(|e| self.transpile_expression(e.data))

@@ -2,7 +2,7 @@ import .math
 import .utils
 
 def do_nothing() {
-    /* ... */
+    // ...
 }
 
 def main() {
