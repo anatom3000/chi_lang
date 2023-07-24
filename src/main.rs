@@ -1,7 +1,9 @@
-use crap_lang::*;
-use std::{env, path::PathBuf, process::Command};
+use std::process::ExitCode;
 
-fn main() {
+use crap_lang::*;
+use std::env;
+
+fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
 
     let src = match args.get(1) {
@@ -9,38 +11,31 @@ fn main() {
         None => {
             eprintln!("Please provide an input file as the first argument");
             eprintln!("Exitting...");
-            return;
+            return ExitCode::FAILURE;
         }
     };
 
     let target_dir = "generated";
 
-    let module_name = match transpile(src, target_dir) {
-        Ok(name) => {
-            println!("Successfully transpiled `{src}` to `{target_dir}`!");
-            name
+    match compile_and_run(src, target_dir) {
+        Ok(code) => {
+            ExitCode::from(code)
         },
-        Err(e) => {
-            eprintln!("An error occured during compilation: {e:#?}");
-            return;
-        }
-    };
-
-    match compilation::compile(PathBuf::from(target_dir)) {
-        Ok(()) => println!("Compiled generated C code to `{target_dir}/build/{module_name}`"),
-        Err(compilation::CompilationError::IoError(err)) => panic!("IO Error while compiling generated C code: {err}"),
-        Err(compilation::CompilationError::UnsupportedPlatform(plat)) => {
-            eprintln!("Cannot compile generated C code on {plat}, skipping compilation...");
-            return;
+        Err(compilation::CompilationError::TranspileError(err)) => {
+            eprintln!("An error occured during transpilation: {err:#?}");
+            ExitCode::FAILURE
         },
         Err(compilation::CompilationError::CompilerError(msg)) => {
             eprintln!("Compiler failed to compile generared C code: \n{msg}");
-            return;
-        }
+            ExitCode::FAILURE
+        },
+        Err(compilation::CompilationError::UnsupportedPlatform(plat)) => {
+            eprintln!("Cannot compile generated C code on {plat}, skipping compilation...");
+            ExitCode::FAILURE
+        },
+        Err(compilation::CompilationError::IoError(err)) => {
+            eprintln!("IO Error while compiling generated C code: {err}");
+            ExitCode::FAILURE
+        },
     }
-
-    println!("Running `{target_dir}/build/{module_name}`...");
-    println!();
-    Command::new(format!("{target_dir}/build/{module_name}")).spawn().unwrap();
-
 }

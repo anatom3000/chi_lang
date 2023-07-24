@@ -1,9 +1,13 @@
 use std::{path::PathBuf, process::Command, io, fs};
 
+use crate::TranspileError;
+
+#[derive(Debug)]
 pub enum CompilationError {
     UnsupportedPlatform(&'static str),
     IoError(io::Error),
-    CompilerError(String)
+    CompilerError(String),
+    TranspileError(TranspileError),
 }
 
 pub fn compile(target_dir: PathBuf) -> Result<(), CompilationError> {

@@ -348,6 +348,7 @@ impl ModuleTranspiler {
                 "uint" => "unsigned int".to_string(),
                 "float" => "double".to_string(),
                 "bool" => "_Bool".to_string(),
+                "char" => "char".to_string(),
         
                 "int8" => "int8_t".to_string(),
                 "uint8" => "uint8_t".to_string(),
