@@ -2,17 +2,15 @@ use std::path::{Path, PathBuf};
 use std::io;
 use std::process::Command;
 
-use analysis::AnalysisError;
+use analysis::{AnalysisError, ModuleScope};
 use compilation::CompilationError;
 use parser::ParserError;
 
-use crate::module::Module;
 
 mod analysis;
 mod ast;
 mod lexer;
 mod parser;
-mod module;
 mod transpiler;
 pub mod compilation;
 
@@ -29,7 +27,7 @@ pub enum TranspileError {
 fn transpile(main_file: &str, target_dir: &str) -> Result<String, TranspileError> {
     let main_path = Path::new(main_file).to_path_buf();
     
-    let mut main_module = Module::main(main_path)?;
+    let mut main_module = ModuleScope::main(main_path)?;
 
     main_module.analyse().map_err(|e| TranspileError::AnalysisError(e))?;
 

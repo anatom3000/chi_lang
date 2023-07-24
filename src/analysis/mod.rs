@@ -1,11 +1,12 @@
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::fmt::Display;
 use std::path::PathBuf;
-use std::{mem, vec};
+use std::{mem, vec, fs};
 
 use crate::ast::{self, Literal};
-use crate::lexer;
-use crate::module::Module;
+use crate::transpiler::{ModuleTranspiler, generate_makefile};
+use crate::{lexer, TranspileError, parser};
 use crate::parser::ParserError;
 
 #[macro_use]
@@ -710,27 +711,38 @@ impl FunctionScope {
     }
 }
 
-
 #[derive(Debug, Clone)]
 pub(crate) enum Resource {
     Function(FunctionHead),
     Type(TypeDefinition),
     Variable(Type),
     #[allow(dead_code)]
-    Module(Module)
+    Module(ModuleScope)
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct ModuleScope {
+    pub(crate) file: PathBuf,
+    pub(crate) path: Vec<String>,
+    is_main: bool,
+
     source: Vec<ast::Statement>,
     pub(crate) statements: Vec<Statement>,
-    declared_functions: HashMap<String, FunctionScope>,
+    pub(crate) declared_functions: HashMap<String, FunctionScope>,
     pub(crate) resources: HashMap<String, Resource>,
     pub(crate) externs: Vec<String>,
 }
 
 impl ModuleScope {
-    pub(crate) fn declaration_pass(&mut self, module: &Module) -> Result<(), AnalysisError> {
+    pub fn analyse(&mut self) -> Result<(), AnalysisError> {
+        self.declaration_pass()?;
+        self.execution_pass()?;
+
+        Ok(())
+    }
+
+
+    pub(crate) fn declaration_pass(&mut self) -> Result<(), AnalysisError> {
 
         for stmt in self.source.clone() {
             match stmt {
@@ -842,7 +854,7 @@ impl ModuleScope {
                 },
                 ast::Statement::Import(kind) => match kind {
                     ast::Import::Absolute(_) => todo!("absolute paths"),
-                    ast::Import::Relative(name) => self.import_local_module(module, name)?
+                    ast::Import::Relative(name) => self.import_local_module(name)?
                 },
                 other @ ( 
                       ast::Statement::Expression(_) 
@@ -862,8 +874,8 @@ impl ModuleScope {
         Ok(())
     }
 
-    fn import_local_module(&mut self, module: &Module, end: String) -> Result<(), AnalysisError> {
-        let mut submodule = module.child(end.clone())?;
+    fn import_local_module(&mut self, end: String) -> Result<(), AnalysisError> {
+        let mut submodule = self.child(end.clone())?;
 
         submodule.declaration_pass()?;
 
@@ -875,11 +887,14 @@ impl ModuleScope {
     }
 
     pub(crate) fn execution_pass(&mut self) -> Result<(), AnalysisError> {
-        let module = self.clone();
 
-        for func in self.declared_functions.values_mut() {
-            func.execution_pass(&module)?;
+        let mut declared_functions = mem::take(&mut self.declared_functions);
+
+        for func in declared_functions.values_mut() {
+            func.execution_pass(self)?;
         }
+
+        self.declared_functions = declared_functions;
 
         for res in self.resources.values_mut() {
             if let Resource::Module(m) = res {
@@ -904,7 +919,7 @@ impl ModuleScope {
                     .ok_or_else(|| AnalysisError::UnknownResource(path.clone()));
             }
             match module.resources.get(name).ok_or_else(|| AnalysisError::UnknownResource(path.clone()))? {
-                Resource::Module(Module { scope: Some(scope), .. }) => module = scope,
+                Resource::Module(m) => module = m,
                 _ => return Err(AnalysisError::UnknownResource(path.clone()))
             }
         }
@@ -929,7 +944,7 @@ impl ModuleScope {
 
         for (index, name) in path.iter().enumerate() {
             match module.resources.get(name).ok_or_else(|| AnalysisError::UnknownResource(path.clone()))? {
-                Resource::Module(Module { scope: Some(scope), .. }) => module = scope,
+                Resource::Module(m) => module = m,
                 Resource::Variable(var_type) if index+1 == path.len() => return Ok(VariableOrAttribute::Variable(var_type.clone())),
                 Resource::Variable(var_type) => return Ok(VariableOrAttribute::Attribute(
                     module.get_struct_member(
@@ -991,15 +1006,89 @@ impl ModuleScope {
         }
     }
 
-    pub fn new(source: Vec<ast::Statement>) -> Self {
-        ModuleScope {
+    pub fn main(root: PathBuf) -> Result<Self, TranspileError> {
+        let mut root = root.canonicalize().map_err(|e| TranspileError::FileError(e))?;
+
+        let package = root.file_stem().unwrap().to_str().unwrap().to_string();
+
+        if let Some(ext) = root.extension() {
+            if ext != OsStr::new("chi") {
+                return Err(TranspileError::WrongExtension(root));
+            }
+        }
+
+        let file = root.clone();
+
+        root.pop();
+
+        let source = parser::Parser::from_source(&fs::read_to_string(&file).unwrap())
+            .parse()
+            .map_err(|e| TranspileError::ParserError(e))?;
+
+        Ok(ModuleScope {
+            path: vec![package],
+            is_main: true,
+            file,
             source,
             statements: vec![],
             resources: HashMap::new(),
             declared_functions: HashMap::new(),
             externs: vec![],
-        }
+        })
     }
+
+    pub(crate) fn child(&self, end: String) -> Result<Self, AnalysisError> {
+        let ModuleScope { file, mut path, is_main, .. } = self.clone();
+
+        path.push(end.clone());
+
+        if !is_main && file.parent().unwrap().file_name().unwrap() != file.file_stem().expect("module file have a stem") {
+            return Err(AnalysisError::RootModuleFileOutside { path: path, file: file })
+        }
+
+        let mut single_file_module = file.clone();
+
+        single_file_module.pop();
+        single_file_module.push(end.clone());
+        single_file_module.set_extension("chi");
+
+        let mut multiple_files_module_root = file.clone();
+        multiple_files_module_root.pop();
+        multiple_files_module_root.push(end.clone());
+        multiple_files_module_root.push(end.clone());
+        multiple_files_module_root.set_extension("chi");
+
+        let single_exists = single_file_module.is_file();
+        let multiple_exists = multiple_files_module_root.is_file();
+        
+        // module file resolution
+        let file = if single_exists && multiple_exists {
+                                return Err(AnalysisError::DuplicateModuleFile { path: path, files: (single_file_module, multiple_files_module_root) })
+                            } else if single_exists {
+                                single_file_module
+                            } else if multiple_exists {
+                                multiple_files_module_root
+                            } else {
+                                return Err(AnalysisError::UnknownModule(path))
+                            };
+
+
+        let source = parser::Parser::from_source(&fs::read_to_string(&file).unwrap())
+            .parse()
+            .map_err(|e| AnalysisError::ParserError(e))?;
+        
+        Ok(ModuleScope {
+            file,
+            path,
+            is_main: false,
+            source,
+            statements: vec![],
+            resources: HashMap::new(),
+            declared_functions: HashMap::new(),
+            externs: vec![],
+        })
+    }
+
 
     fn type_expression(&self, expression: ast::Expression) -> Result<Expression, AnalysisError> {
         FunctionScope::new(vec![], FunctionHead { return_type: Type::Void, arguments: vec![], is_variadic: None }).type_expression(self, expression)
@@ -1008,7 +1097,7 @@ impl ModuleScope {
     fn analyse_new_type(&self, ty: ast::Type) -> Type {
         match ty {
             ast::Type::Void => Type::Void,
-            ast::Type::Path(name) => Type::Path(name),
+            ast::Type::Path(path) => Type::Path(self.make_path_absolute(path)),
             ast::Type::Reference(inner) => Type::Reference(Box::new(self.analyse_new_type(*inner))),
             // Type::Array { base, size } => Type::Array { base: Box::new(self.analyse_new_type(*base)), size },
             // Type::Function { return_type, arguments } => {
@@ -1027,9 +1116,19 @@ impl ModuleScope {
     fn analyse_type(&self, ty: ast::Type) -> Result<Type, AnalysisError> {
         Ok(match ty {
             ast::Type::Void => Type::Void,
-            ast::Type::Path(name) => Type::Path(self.get_type(&name).map(|_| name)?),
+            ast::Type::Path(name) => Type::Path(self.make_path_absolute(self.get_type(&name).map(|_| name)?)),
             ast::Type::Reference(inner) => Type::Reference(Box::new(self.analyse_type(*inner)?)),
         })
+    }
+
+    fn make_path_absolute(&self, mut path: Vec<String>) -> Vec<String> {
+        if builtins::TYPES.get(&path).is_some() {
+            return path;
+        }
+
+        let mut abs_path = self.path.clone();
+        abs_path.append(&mut path);
+        abs_path
     }
 
     fn type_literal(&self, value: Literal) -> Result<Expression, AnalysisError> {
@@ -1057,4 +1156,34 @@ impl ModuleScope {
         Ok(Expression { data: ExpressionData::Literal(value), type_ })
     }
 
+    pub fn transpile(self, target_dir: PathBuf) -> Result<(), TranspileError> {
+        let mut transpiled_modules = HashMap::new();
+        let module_name = self.path[0].clone();
+
+        let is_main = self.is_main;
+
+        ModuleTranspiler::transpile(self.path.clone(), self, &mut transpiled_modules, is_main);
+
+        let mut files = vec![];
+        for m in transpiled_modules.into_values() {
+            let source = m.source();
+            let header = m.header();
+
+            files.push(format!("./{}", m.source_path.display()));
+
+            let source_path = target_dir.join(m.source_path);
+            let header_path = target_dir.join(m.header_path);
+            fs::create_dir_all(source_path.clone().parent().unwrap()).unwrap();
+
+            fs::write(source_path, source).map_err(|e| TranspileError::FileError(e))?;
+            fs::write(header_path, header).map_err(|e| TranspileError::FileError(e))?;
+        }
+
+        let makefile_path = target_dir.join("Makefile");
+        let makefile_contents = generate_makefile(&module_name, &files);
+
+        fs::write(makefile_path, makefile_contents).map_err(|e| TranspileError::FileError(e))?;
+
+        Ok(())
+    }
 }

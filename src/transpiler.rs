@@ -22,7 +22,7 @@ impl ModuleTranspiler {
         if transpiled_modules.contains_key(&path) {
             for (_, res) in scope.resources {
                 if let Resource::Module(m) = res {
-                    ModuleTranspiler::transpile(m.path, m.scope.expect("analysis called before transpilation"), transpiled_modules, false)
+                    ModuleTranspiler::transpile(m.path.clone(), m, transpiled_modules, false)
                 }
             }
             return;
@@ -101,7 +101,7 @@ impl ModuleTranspiler {
 
         for (_, res) in resources {
             if let Resource::Module(m) = res {
-                ModuleTranspiler::transpile(m.path, m.scope.expect("analysis called before transpilation"), transpiled_modules, false)
+                ModuleTranspiler::transpile(m.path.clone(), m, transpiled_modules, false)
             }
         }
     }
@@ -182,7 +182,7 @@ impl ModuleTranspiler {
                 let TypeKind::Struct {members} = self.scope.get_type(&vec![name.clone()]).expect("declared struct exists").kind.clone()
                     else { unreachable!("defined struct should have struct type ") };
 
-                let struct_name = self.transpile_path(&self.to_absolute_path(vec![name]));
+                let struct_name = self.transpile_path(&(vec![name]));
                 self.add_header_line(format!("typedef struct {struct_name} {{"));
                 self.indent += 1;
                 for (m_name, m_type) in members {
@@ -366,11 +366,11 @@ impl ModuleTranspiler {
                 "usize" => "size_t".to_string(),
                 "isize" => "ptrdiff_t".to_string(),
         
-                _ => self.transpile_path(&self.to_absolute_path(path))
+                _ => self.transpile_path(&path)
             }
     
         } else {
-            self.transpile_path(&self.to_absolute_path(path))
+            self.transpile_path(&path)
         }
     }
     

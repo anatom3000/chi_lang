@@ -95,6 +95,11 @@ lazy_static! {
             supported_binary_operations: HashMap::from([(BinaryOperator::Equal, HashMap::from([(type_!(bool), type_!(bool))]))]),
             supported_unary_operations: HashMap::from([(UnaryOperator::Not, type_!(bool))])
         })),
+        (vec!["char".to_string()], Resource::Type(TypeDefinition {
+            kind: TypeKind::Primitive,
+            supported_binary_operations: HashMap::new(),
+            supported_unary_operations: HashMap::new()
+        })),
 
         num_type!(float;),
         num_type!(float32;),
