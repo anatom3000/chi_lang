@@ -1,7 +1,7 @@
-use std::{path::PathBuf, collections::HashMap, mem};
+use std::{collections::HashMap, mem, path::PathBuf};
 
 use crate::{
-    analysis::{Type, ExpressionData, ModuleScope, Statement, TypeKind, Resource},
+    analysis::{ExpressionData, ModuleScope, Resource, Statement, Type, TypeKind},
     ast::Literal,
 };
 
@@ -15,8 +15,12 @@ pub(crate) struct ModuleTranspiler {
 }
 
 impl ModuleTranspiler {
-    pub fn transpile(path: Vec<String>, scope: ModuleScope, transpiled_modules: &mut HashMap<Vec<String>, ModuleTranspiler>, is_main: bool) {
-
+    pub fn transpile(
+        path: Vec<String>,
+        scope: ModuleScope,
+        transpiled_modules: &mut HashMap<Vec<String>, ModuleTranspiler>,
+        is_main: bool,
+    ) {
         if transpiled_modules.contains_key(&path) {
             for (_, res) in scope.resources {
                 if let Resource::Module(m) = res {
@@ -25,7 +29,7 @@ impl ModuleTranspiler {
             }
             return;
         }
-        
+
         let piter = if is_main {
             path.iter()
         } else {
@@ -40,7 +44,6 @@ impl ModuleTranspiler {
         source_path.set_extension("c");
         header_path.set_extension("h");
 
-
         let mut new = ModuleTranspiler {
             source_path,
             header_path,
@@ -51,7 +54,11 @@ impl ModuleTranspiler {
         };
 
         // TODO: lazily add includes (e.g. include stddef.h only when NULL is used)
-        let mut includes = vec!["<stddef.h>".to_string(), "<stdbool.h>".to_string(), "<stdint.h>".to_string()];
+        let mut includes = vec![
+            "<stddef.h>".to_string(),
+            "<stdbool.h>".to_string(),
+            "<stdint.h>".to_string(),
+        ];
         for ext in mem::take(&mut new.scope.externs) {
             if ext.starts_with('<') && ext.ends_with('>') {
                 if includes.contains(&ext) {
@@ -69,7 +76,13 @@ impl ModuleTranspiler {
             }
         }
 
-        let guard_name = format!("_{}_H", path.iter().map(|x| x.to_uppercase()).collect::<Vec<_>>().join("_"));
+        let guard_name = format!(
+            "_{}_H",
+            path.iter()
+                .map(|x| x.to_uppercase())
+                .collect::<Vec<_>>()
+                .join("_")
+        );
 
         new.add_header_line(format!("#ifndef {guard_name}"));
         new.add_header_line(format!("#define {guard_name}"));
@@ -80,7 +93,6 @@ impl ModuleTranspiler {
         }
 
         new.add_line(format!("#include \"{}\"", new.header_path.display()));
-        
 
         new.add_new_line();
 
@@ -110,7 +122,7 @@ impl ModuleTranspiler {
     fn add_new_line(&mut self) {
         self.source.push(String::new())
     }
-    
+
     fn add_header_line(&mut self, line: String) {
         self.header
             .push(format!("{}{line}", "    ".repeat(self.indent)))
@@ -142,8 +154,12 @@ impl ModuleTranspiler {
                 // self.add_new_line();
             }
             FunctionDeclaration { name } => {
-                let func = self.scope.get_function(&name).expect("declared function exists").clone();
-                
+                let func = self
+                    .scope
+                    .get_function(&name)
+                    .expect("declared function exists")
+                    .clone();
+
                 let mut args = func
                     .head
                     .arguments
@@ -158,7 +174,8 @@ impl ModuleTranspiler {
 
                 // don't "namespacify" the function name if function is the main function or an extern function
                 let func_name = self.transpile_path(&func.head.path);
-                let declaration = self.transpile_declaration(func.head.return_type, format!("{func_name}({args})"));
+                let declaration = self
+                    .transpile_declaration(func.head.return_type, format!("{func_name}({args})"));
                 self.add_header_line(format!("{declaration};"));
                 self.add_line(format!("{declaration} {{"));
                 self.indent += 1;
@@ -171,9 +188,12 @@ impl ModuleTranspiler {
                 //self.source.pop();
                 self.add_line('}'.to_string());
                 self.add_new_line();
-            },
+            }
             StructDeclaration { name } => {
-                let struct_type = self.scope.get_type(&vec![name.clone()]).expect("declared struct exists");
+                let struct_type = self
+                    .scope
+                    .get_type(&vec![name.clone()])
+                    .expect("declared struct exists");
 
                 let TypeKind::Struct {members} = struct_type.kind.clone()
                     else { unreachable!("defined struct should have struct type ") };
@@ -189,7 +209,7 @@ impl ModuleTranspiler {
 
                 self.add_header_line(format!("}} {struct_name};"));
                 self.add_new_header_line();
-            },
+            }
             If {
                 conditions_and_bodies,
                 else_body,
@@ -221,7 +241,7 @@ impl ModuleTranspiler {
                 }
 
                 self.add_line('}'.to_string());
-            },
+            }
             While { condition, body } => {
                 let condition = self.transpile_expression(condition.data);
                 self.add_line(format!("while ({}) {{", condition));
@@ -233,19 +253,17 @@ impl ModuleTranspiler {
                 self.indent -= 1;
 
                 self.add_line('}'.to_string())
-            },
+            }
             Return(expr) => {
                 match expr {
                     Some(expr) => {
                         let expr = self.transpile_expression(expr.data);
                         self.add_line(format!("return {};", expr))
-                    },
-                    None => self.add_line(format!("return;"))
+                    }
+                    None => self.add_line(format!("return;")),
                 };
-            },
-            Import(path) => {
-                self.add_header_line(format!("#include \"{}.h\"", path[1..].join("/")))
             }
+            Import(path) => self.add_header_line(format!("#include \"{}.h\"", path[1..].join("/"))),
         }
     }
 
@@ -266,9 +284,15 @@ impl ModuleTranspiler {
                 function,
                 arguments,
             } => {
-                let head = self.scope.get_function_head(&function).expect("called function exists");
-                let function = if head.is_variadic.is_some() { function.last().expect("path is not empty").clone() } 
-                                   else { self.transpile_path(&head.path) };
+                let head = self
+                    .scope
+                    .get_function_head(&function)
+                    .expect("called function exists");
+                let function = if head.is_variadic.is_some() {
+                    function.last().expect("path is not empty").clone()
+                } else {
+                    self.transpile_path(&head.path)
+                };
                 let args = arguments
                     .into_iter()
                     .map(|e| self.transpile_expression(e.data))
@@ -281,7 +305,7 @@ impl ModuleTranspiler {
                 Literal::Integer { value, .. } => value,
                 Literal::Float { value, size } => match size {
                     Some(32) => format!("{}f", value),
-                    _ => value
+                    _ => value,
                 },
                 Literal::Null => "NULL".to_string(),
                 Literal::True => "true".to_string(),
@@ -294,12 +318,17 @@ impl ModuleTranspiler {
                 format!("{operator}{}", self.transpile_expression(argument.data))
             }
             ExpressionData::Variable(path) => self.transpile_path(&path),
-            ExpressionData::StructMember { instance, member } => format!("{}.{}", self.transpile_expression(instance.data), member),
+            ExpressionData::StructMember { instance, member } => {
+                format!("{}.{}", self.transpile_expression(instance.data), member)
+            }
             ExpressionData::StructInit { path, members } => {
-                let members = members.into_iter()
-                .map(|(m_name, m_value)| format!(".{m_name} = {}", self.transpile_expression(m_value.data)))
-                .collect::<Vec<_>>()
-                .join(", ");
+                let members = members
+                    .into_iter()
+                    .map(|(m_name, m_value)| {
+                        format!(".{m_name} = {}", self.transpile_expression(m_value.data))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
 
                 format!("({}) {{ {members} }}", self.transpile_type(path))
             }
@@ -308,14 +337,16 @@ impl ModuleTranspiler {
 
     fn transpile_declaration(&mut self, type_: Type, variable: String) -> String {
         match type_ {
-            Type::Void => format!("void {variable}", ),
+            Type::Void => format!("void {variable}",),
             Type::Path(path) => format!("{} {variable}", self.transpile_type(path)),
             Type::Reference(inner) => {
                 match *inner {
-                    Type::Void | Type::Path(_) | Type::Reference(_) => self.transpile_declaration(*inner, format!("*{variable}")),
+                    Type::Void | Type::Path(_) | Type::Reference(_) => {
+                        self.transpile_declaration(*inner, format!("*{variable}"))
+                    }
                     // _ => self.transpile_declaration(*inner, format!("(*{variable})"))
                 }
-            },
+            }
             // Type::Array { base, size } => {
             //     match *base {
             //         Type::Void | Type::Identifier(_) /* | Type::Array { .. } */  => self.transpile_declaration(*base, format!("{variable}[{size}]")),
@@ -339,7 +370,7 @@ impl ModuleTranspiler {
                 "float" => "double".to_string(),
                 "bool" => "_Bool".to_string(),
                 "char" => "char".to_string(),
-        
+
                 "int8" => "int8_t".to_string(),
                 "uint8" => "uint8_t".to_string(),
                 "int16" => "int16_t".to_string(),
@@ -348,24 +379,21 @@ impl ModuleTranspiler {
                 "uint32" => "int32_t".to_string(),
                 "int64" => "uint64_t".to_string(),
                 "uint64" => "uint64_t".to_string(),
-        
+
                 "float32" => "float".to_string(),
                 "float64" => "double".to_string(),
                 "float128" => "long double".to_string(),
-        
+
                 "usize" => "size_t".to_string(),
                 "isize" => "ptrdiff_t".to_string(),
-        
-                _ => self.transpile_path(&path)
+
+                _ => self.transpile_path(&path),
             }
-    
         } else {
             self.transpile_path(&path)
         }
     }
-    
 }
-
 
 impl ModuleTranspiler {
     pub fn source(&self) -> String {
@@ -378,10 +406,15 @@ impl ModuleTranspiler {
 }
 
 pub(crate) fn generate_makefile(module_name: &str, files: &[String]) -> String {
-    let srcs = files.into_iter().map(|x| format!("$(ROOT_DIR){}", &x[1..])).collect::<Vec<_>>().join(" ");
+    let srcs = files
+        .into_iter()
+        .map(|x| format!("$(ROOT_DIR){}", &x[1..]))
+        .collect::<Vec<_>>()
+        .join(" ");
 
     // base makefile credit: https://makefiletutorial.com/#makefile-cookbook
-    format!("\
+    format!(
+        "\
 ROOT_DIR := $(dir $(lastword $(MAKEFILE_LIST)))
 
 SRCS := {srcs}
@@ -410,5 +443,6 @@ clean:
 	rm -r $(BUILD_DIR)
 
 -include $(DEPS)
-")
+"
+    )
 }

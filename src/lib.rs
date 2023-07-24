@@ -1,18 +1,17 @@
-use std::path::{Path, PathBuf};
 use std::io;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use analysis::{AnalysisError, ModuleScope};
 use compilation::CompilationError;
 use parser::ParserError;
 
-
 mod analysis;
 mod ast;
+pub mod compilation;
 mod lexer;
 mod parser;
 mod transpiler;
-pub mod compilation;
 
 #[derive(Debug)]
 pub enum TranspileError {
@@ -21,15 +20,17 @@ pub enum TranspileError {
     WrongExtension(PathBuf),
     NonAlphanumericModuleName(String),
     ParserError(Vec<ParserError>),
-    AnalysisError(AnalysisError)
+    AnalysisError(AnalysisError),
 }
 
 fn transpile(main_file: &str, target_dir: &str) -> Result<String, TranspileError> {
     let main_path = Path::new(main_file).to_path_buf();
-    
+
     let mut main_module = ModuleScope::main(main_path)?;
 
-    main_module.analyse().map_err(|e| TranspileError::AnalysisError(e))?;
+    main_module
+        .analyse()
+        .map_err(|e| TranspileError::AnalysisError(e))?;
 
     let module_name = main_module.path[0].clone();
 
@@ -39,7 +40,8 @@ fn transpile(main_file: &str, target_dir: &str) -> Result<String, TranspileError
 }
 
 fn compile(main_file: &str, target_dir: &str) -> Result<String, CompilationError> {
-    let module_name = transpile(main_file, target_dir).map_err(|e|CompilationError::TranspileError(e))?;
+    let module_name =
+        transpile(main_file, target_dir).map_err(|e| CompilationError::TranspileError(e))?;
 
     compilation::compile(PathBuf::from(target_dir))?;
     Ok(module_name)
@@ -48,17 +50,20 @@ fn compile(main_file: &str, target_dir: &str) -> Result<String, CompilationError
 pub fn compile_and_run(main_file: &str, target_dir: &str) -> Result<u8, CompilationError> {
     let module_name = compile(main_file, target_dir)?;
 
-    Ok(
-        Command::new(format!("{target_dir}/build/{module_name}"))
-            .status().unwrap()
-            .code().unwrap_or(-1) as u8
-    )
+    Ok(Command::new(format!("{target_dir}/build/{module_name}"))
+        .status()
+        .unwrap()
+        .code()
+        .unwrap_or(-1) as u8)
 }
 
 #[cfg(test)]
 mod tests {
-    pub fn compile_and_test(main_file: &'static str, target_dir: &str) -> Result<u8, super::CompilationError> {
-        use std::{process, fs};
+    pub fn compile_and_test(
+        main_file: &'static str,
+        target_dir: &str,
+    ) -> Result<u8, super::CompilationError> {
+        use std::{fs, process};
 
         // clear the previously generated code
         let _ = fs::remove_dir_all(target_dir);
@@ -70,17 +75,20 @@ mod tests {
                 // don't print program output during tests!
                 .stdout(process::Stdio::null())
                 .stderr(process::Stdio::null())
-                .status().unwrap()
-                .code().unwrap_or(-1) as u8
+                .status()
+                .unwrap()
+                .code()
+                .unwrap_or(-1) as u8,
         )
     }
-    
 
     macro_rules! test_program {
         ($name:ident: $path:expr) => {
             #[test]
             fn $name() {
-                let result = compile_and_test($path, &format!("generated_tests/{}", stringify!($name))).unwrap();
+                let result =
+                    compile_and_test($path, &format!("generated_tests/{}", stringify!($name)))
+                        .unwrap();
                 assert_eq!(result, 0);
             }
         };

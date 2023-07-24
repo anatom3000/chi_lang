@@ -1,4 +1,4 @@
-use std::{path::PathBuf, process::Command, io, fs};
+use std::{fs, io, path::PathBuf, process::Command};
 
 use crate::TranspileError;
 
@@ -12,7 +12,7 @@ pub enum CompilationError {
 
 pub fn compile(target_dir: PathBuf) -> Result<(), CompilationError> {
     if cfg!(target_os = "windows") {
-        return Err(CompilationError::UnsupportedPlatform("Windows"))
+        return Err(CompilationError::UnsupportedPlatform("Windows"));
     }
 
     let makefile_path = target_dir.join("Makefile");
@@ -26,10 +26,13 @@ pub fn compile(target_dir: PathBuf) -> Result<(), CompilationError> {
         .map_err(|e| CompilationError::IoError(e))?;
 
     if !output.stderr.is_empty() {
-        return Err(CompilationError::CompilerError(String::from_utf8_lossy(output.stderr.as_slice()).to_string()));
+        return Err(CompilationError::CompilerError(
+            String::from_utf8_lossy(output.stderr.as_slice()).to_string(),
+        ));
     }
 
-    fs::write(target_dir.join("build/chi_compile.log"), output.stdout).map_err(|e| CompilationError::IoError(e))?;
+    fs::write(target_dir.join("build/chi_compile.log"), output.stdout)
+        .map_err(|e| CompilationError::IoError(e))?;
 
     Ok(())
 }

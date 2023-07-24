@@ -1,18 +1,18 @@
-use std::collections::HashMap;
+use super::{BinaryOperator, Resource, Type, TypeDefinition, TypeKind, UnaryOperator};
 use lazy_static::lazy_static;
-use super::{Type, TypeDefinition, TypeKind, BinaryOperator, UnaryOperator, Resource};
+use std::collections::HashMap;
 
 macro_rules! num_type {
     ($self:ident ; $($smaller:ident)*) => {{
         let results = HashMap::from([
-            (type_!($self), type_!($self)), 
+            (type_!($self), type_!($self)),
             $( (type_!($smaller), type_!($self)), )*
         ]);
         let cmp_results = HashMap::from([
             (type_!($self), type_!(bool)),
             $( (type_!($smaller), type_!(bool)), )*
         ]);
-        
+
         let path = vec![stringify!($self).to_string()];
 
 
@@ -36,11 +36,11 @@ macro_rules! num_type {
                 (UnaryOperator::Plus, type_!($self))
             ])
         }))
-        
+
     }};
     (unsigned $self:ident) => {{
         let results = HashMap::from([
-            (type_!($self), type_!($self)), 
+            (type_!($self), type_!($self)),
         ]);
         let cmp_results = HashMap::from([
             (type_!($self), type_!(bool)),
@@ -81,47 +81,49 @@ macro_rules! type_ {
     };
     (& $tok:tt) => {
         Type::Reference(Box::new(type_!($tok)))
-    }
-}    
-
+    };
+}
 
 lazy_static! {
     pub(super) static ref TYPES: HashMap<Vec<String>, Resource> = HashMap::from([
         num_type!(int; uint),
         num_type!(unsigned uint),
-
         num_type!(int8;  uint8),
-        num_type!(int16; uint16),        
-        num_type!(int32; uint32),        
+        num_type!(int16; uint16),
+        num_type!(int32; uint32),
         num_type!(int64; uint64),
         num_type!(unsigned uint8),
-        num_type!(unsigned uint16),        
-        num_type!(unsigned uint32),        
+        num_type!(unsigned uint16),
+        num_type!(unsigned uint32),
         num_type!(unsigned uint64),
-
-        
-        (vec!["bool".to_string()], Resource::Type(TypeDefinition {
-            path: vec!["bool".to_string()],
-            kind: TypeKind::Primitive,
-            supported_binary_operations: HashMap::from([(BinaryOperator::Equal, HashMap::from([(type_!(bool), type_!(bool))]))]),
-            supported_unary_operations: HashMap::from([(UnaryOperator::Not, type_!(bool))])
-        })),
-        (vec!["char".to_string()], Resource::Type(TypeDefinition {
-            path: vec!["bool".to_string()],
-            kind: TypeKind::Primitive,
-            supported_binary_operations: HashMap::new(),
-            supported_unary_operations: HashMap::new()
-        })),
-
+        (
+            vec!["bool".to_string()],
+            Resource::Type(TypeDefinition {
+                path: vec!["bool".to_string()],
+                kind: TypeKind::Primitive,
+                supported_binary_operations: HashMap::from([(
+                    BinaryOperator::Equal,
+                    HashMap::from([(type_!(bool), type_!(bool))])
+                )]),
+                supported_unary_operations: HashMap::from([(UnaryOperator::Not, type_!(bool))])
+            })
+        ),
+        (
+            vec!["char".to_string()],
+            Resource::Type(TypeDefinition {
+                path: vec!["bool".to_string()],
+                kind: TypeKind::Primitive,
+                supported_binary_operations: HashMap::new(),
+                supported_unary_operations: HashMap::new()
+            })
+        ),
         num_type!(float;),
         num_type!(float32;),
         num_type!(float64;),
         num_type!(float128;),
-
         num_type!(usize;),
         num_type!(isize; usize)
     ]);
-
     pub(super) static ref INTS: [Type; 12] = [
         type_!(int),
         type_!(int8),
@@ -136,7 +138,6 @@ lazy_static! {
         type_!(usize),
         type_!(isize),
     ];
-
     static ref FLOATS: [Type; 4] = [
         type_!(float),
         type_!(float32),

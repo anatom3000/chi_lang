@@ -141,7 +141,7 @@ pub struct Token {
 pub enum LexingError {
     MisplacedCharacter(char),
     UnTerminatedString((usize, usize)),
-    UnMatchedRightParen((usize, usize))
+    UnMatchedRightParen((usize, usize)),
 }
 
 #[derive(Debug, Clone)]
@@ -158,7 +158,7 @@ pub struct Lexer<'a> {
     current_line: usize,
     current_column: usize,
     no_new_line_depth: usize,
-    newline_escape_mode: bool
+    newline_escape_mode: bool,
 }
 
 impl<'a> Lexer<'a> {
@@ -252,15 +252,11 @@ impl<'a> Lexer<'a> {
     fn digit_sequence(&mut self, start: &mut String) {
         loop {
             match self.chars.peek() {
-                Some( '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' ) => {
+                Some('0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9') => {
                     self.current_column += 1;
-                    start.push(
-                        self.chars
-                            .next()
-                            .expect("peek was Some"),
-                    );
+                    start.push(self.chars.next().expect("peek was Some"));
                 }
-                _ => break
+                _ => break,
             };
         }
     }
@@ -283,59 +279,65 @@ impl<'a> Lexer<'a> {
                     Some('f') => {
                         self.chars.next();
                         match self.chars.peek() {
-                            Some( '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' ) => {
+                            Some('0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9') => {
                                 let mut size = String::with_capacity(3); // most of the time float type size should be 32, 64 or 128
                                 self.digit_sequence(&mut size);
-                                let size: usize =  size.parse().expect("float type size should only be ASCII digits");
+                                let size: usize = size
+                                    .parse()
+                                    .expect("float type size should only be ASCII digits");
 
                                 Token {
                                     data: TokenData::Float(content, Some(size)),
                                     line: start_position.0,
-                                    column: start_position.1
+                                    column: start_position.1,
                                 }
-                            },
+                            }
                             _ => Token {
                                 data: TokenData::Float(content, None),
                                 line: start_position.0,
-                                column: start_position.1
-                            }
+                                column: start_position.1,
+                            },
                         }
-                    },
+                    }
                     _ => Token {
                         data: TokenData::Float(content, None),
                         line: start_position.0,
-                        column: start_position.1
-                    }
-                }
+                        column: start_position.1,
+                    },
+                };
             }
             Some('u') => signed = false,
             Some('i') => signed = true,
-            _ => return Token {
-                data: TokenData::Integer(content, None),
-                line: start_position.0,
-                column: start_position.1
+            _ => {
+                return Token {
+                    data: TokenData::Integer(content, None),
+                    line: start_position.0,
+                    column: start_position.1,
+                }
             }
         }
 
         self.chars.next();
         match self.chars.peek() {
-            Some( '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' ) => {
+            Some('0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9') => {
                 let mut size = String::with_capacity(3);
                 self.digit_sequence(&mut size);
 
-                let size: usize = size.parse().expect("int type size should only be ASCII digits");
+                let size: usize = size
+                    .parse()
+                    .expect("int type size should only be ASCII digits");
 
                 Token {
                     data: TokenData::Integer(content, Some((signed, Some(size)))),
                     line: start_position.0,
-                    column: start_position.1
+                    column: start_position.1,
                 }
-            },
+            }
             _ => Token {
                 data: TokenData::Integer(content, Some((signed, None))),
                 line: start_position.0,
-                column: start_position.1
-            }
+                column: start_position.1,
+            },
         }
     }
 
@@ -391,15 +393,18 @@ impl<'a> Iterator for Lexer<'a> {
                 '(' => {
                     self.no_new_line_depth += 1;
                     self.token(LeftParen)
-                },
+                }
                 ')' => {
                     if self.no_new_line_depth != 0 {
                         self.no_new_line_depth -= 1;
                     } else {
-                        self.syntax_error(LexingError::UnMatchedRightParen((self.current_line, self.current_column)));
+                        self.syntax_error(LexingError::UnMatchedRightParen((
+                            self.current_line,
+                            self.current_column,
+                        )));
                     }
                     self.token(RightParen)
-                },
+                }
                 '{' => self.token(LeftBrace),
                 '}' => self.token(RightBrace),
                 '[' => self.token(LeftBracket),
@@ -407,7 +412,7 @@ impl<'a> Iterator for Lexer<'a> {
                 ';' => {
                     self.newline_escape_mode = false;
                     self.token(Semicolon)
-                },
+                }
 
                 ':' => self.token(Colon),
                 ',' => self.token(Comma),
@@ -467,19 +472,16 @@ impl<'a> Iterator for Lexer<'a> {
                         self.token(NewLine)
                     } else {
                         self.next()?
-                    }               
-                },
-                '\\' => {
-                    match self.next() {
-                        Some(Token { data: NewLine, .. }) => {
-                            self.newline_escape_mode = true;
-                            self.next()?
-                        },
-                        tok => {
-                            self.syntax_error(LexingError::MisplacedCharacter('\\'));
-                            tok?
-                        }
-
+                    }
+                }
+                '\\' => match self.next() {
+                    Some(Token { data: NewLine, .. }) => {
+                        self.newline_escape_mode = true;
+                        self.next()?
+                    }
+                    tok => {
+                        self.syntax_error(LexingError::MisplacedCharacter('\\'));
+                        tok?
                     }
                 },
                 letter if letter.is_alphabetic() || letter == '_' => self.identifier(letter),

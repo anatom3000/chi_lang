@@ -2,12 +2,12 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fmt::Display;
 use std::path::PathBuf;
-use std::{mem, vec, fs};
+use std::{fs, mem, vec};
 
 use crate::ast::{self, Literal};
-use crate::transpiler::{ModuleTranspiler, generate_makefile};
-use crate::{lexer, TranspileError, parser};
 use crate::parser::ParserError;
+use crate::transpiler::{generate_makefile, ModuleTranspiler};
+use crate::{lexer, parser, TranspileError};
 
 #[macro_use]
 pub mod builtins;
@@ -42,7 +42,7 @@ pub enum AnalysisError {
     },
     UnexpectedType {
         expected: Type,
-        found: Type
+        found: Type,
     },
     NonExternVariadic {
         name: String,
@@ -53,45 +53,44 @@ pub enum AnalysisError {
     },
     UnknownIntegerSize {
         found: usize,
-        expected: &'static [usize]
+        expected: &'static [usize],
     },
     UnknownFloatSize {
         found: usize,
-        expected: &'static [usize]
+        expected: &'static [usize],
     },
     MemberAccessOnNonStruct {
         instance_type: Type,
-        member: String
+        member: String,
     },
     UnknownMember {
         instance_type: Type,
-        member: String
+        member: String,
     },
     DuplicateStructMember {
         struct_name: String,
-        duplicated_member: String
+        duplicated_member: String,
     },
     NonStructInit {
-        found: Type
+        found: Type,
     },
     MissingMemberInInit {
         struct_name: Vec<String>,
-        missing: String
+        missing: String,
     },
     AssignmentOnValue {
-        value: Expression
+        value: Expression,
     },
     ParserError(Vec<ParserError>),
     DuplicateModuleFile {
         path: Vec<String>,
-        files: (PathBuf, PathBuf)
+        files: (PathBuf, PathBuf),
     },
     RootModuleFileOutside {
         path: Vec<String>,
-        file: PathBuf
-    }
+        file: PathBuf,
+    },
 }
-
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum BinaryOperator {
@@ -129,14 +128,13 @@ impl Display for BinaryOperator {
     }
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UnaryOperator {
     Not,
     Plus,
     Minus,
     Ref,
-    Deref
+    Deref,
 }
 
 impl Display for UnaryOperator {
@@ -150,7 +148,7 @@ impl Display for UnaryOperator {
                 Plus => "+",
                 Minus => "-",
                 Ref => "&",
-                Deref => "*"
+                Deref => "*",
             }
         )
     }
@@ -170,7 +168,6 @@ pub enum Type {
     //     arguments: Vec<Type>
     // }
 }
-
 
 impl Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -209,11 +206,11 @@ pub enum ExpressionData {
     },
     StructMember {
         instance: Box<Expression>,
-        member: String
+        member: String,
     },
     StructInit {
         path: Vec<String>,
-        members: HashMap<String, Expression>
+        members: HashMap<String, Expression>,
     },
     Variable(Vec<String>),
     Literal(Literal),
@@ -222,7 +219,7 @@ pub enum ExpressionData {
 #[derive(Debug, Clone)]
 pub struct Expression {
     pub data: ExpressionData,
-    pub type_: Type
+    pub type_: Type,
 }
 
 impl Expression {
@@ -230,25 +227,45 @@ impl Expression {
         match &self.data {
             ExpressionData::Variable(name) => Ok(match scope.get_variable(module, name)? {
                 VariableOrAttribute::Attribute(expr) => expr.type_,
-                VariableOrAttribute::Variable(ty) => ty
+                VariableOrAttribute::Variable(ty) => ty,
             }),
             ExpressionData::StructMember { instance, member } => {
                 let instance_type = module.get_type(match &instance.type_ {
                     Type::Path(path) => path,
-                    _ => return Err(AnalysisError::MemberAccessOnNonStruct { instance_type: instance.type_.clone(), member: member.clone() })
+                    _ => {
+                        return Err(AnalysisError::MemberAccessOnNonStruct {
+                            instance_type: instance.type_.clone(),
+                            member: member.clone(),
+                        })
+                    }
                 })?;
 
                 match instance_type.kind {
-                    TypeKind::Struct { ref members } => Ok(members.get(member as &str)
-                        .ok_or(AnalysisError::UnknownMember { instance_type: instance.type_.clone(), member: member.clone() })?.clone()),
-                    _ => return Err(AnalysisError::MemberAccessOnNonStruct { instance_type: instance.type_.clone(), member: member.clone() })
+                    TypeKind::Struct { ref members } => Ok(members
+                        .get(member as &str)
+                        .ok_or(AnalysisError::UnknownMember {
+                            instance_type: instance.type_.clone(),
+                            member: member.clone(),
+                        })?
+                        .clone()),
+                    _ => {
+                        return Err(AnalysisError::MemberAccessOnNonStruct {
+                            instance_type: instance.type_.clone(),
+                            member: member.clone(),
+                        })
+                    }
                 }
-            },
-            ExpressionData::Unary { operator: UnaryOperator::Deref, argument } => {
+            }
+            ExpressionData::Unary {
+                operator: UnaryOperator::Deref,
+                argument,
+            } => {
                 argument.type_lhs(scope, module)?;
                 Ok(self.type_.clone())
-            },
-            _ => Err(AnalysisError::AssignmentOnValue { value: self.clone() })
+            }
+            _ => Err(AnalysisError::AssignmentOnValue {
+                value: self.clone(),
+            }),
         }
     }
 }
@@ -261,13 +278,10 @@ pub(crate) struct FunctionHead {
     pub(crate) is_variadic: Option<bool>,
 }
 
-
 #[derive(Debug, Clone)]
 pub enum TypeKind {
     Primitive,
-    Struct {
-        members: HashMap<String, Type>
-    }
+    Struct { members: HashMap<String, Type> },
 }
 
 #[derive(Clone, Debug)]
@@ -275,7 +289,7 @@ pub struct TypeDefinition {
     pub(crate) path: Vec<String>,
     pub(crate) kind: TypeKind,
     supported_binary_operations: HashMap<BinaryOperator, HashMap<Type, Type>>,
-    supported_unary_operations: HashMap<UnaryOperator, Type>
+    supported_unary_operations: HashMap<UnaryOperator, Type>,
 }
 
 impl TypeDefinition {
@@ -303,7 +317,7 @@ pub(crate) enum Statement {
         name: String,
     },
     StructDeclaration {
-        name: String
+        name: String,
     },
     If {
         conditions_and_bodies: Vec<(Expression, Vec<Statement>)>,
@@ -311,15 +325,15 @@ pub(crate) enum Statement {
     },
     While {
         condition: Expression,
-        body: Vec<Statement>
+        body: Vec<Statement>,
     },
     Return(Option<Expression>),
-    Import(Vec<String>)
+    Import(Vec<String>),
 }
 
 pub(crate) enum VariableOrAttribute {
     Variable(Type),
-    Attribute(Expression)
+    Attribute(Expression),
 }
 
 #[derive(Clone, Debug)]
@@ -331,23 +345,29 @@ pub struct FunctionScope {
 }
 
 impl FunctionScope {
-    fn get_function_head<'a>(&'a self, module: &'a ModuleScope, name: &Vec<String>) -> Result<FunctionHead, AnalysisError> {
+    fn get_function_head<'a>(
+        &'a self,
+        module: &'a ModuleScope,
+        name: &Vec<String>,
+    ) -> Result<FunctionHead, AnalysisError> {
         module.get_function_head(name)
     }
 
-    fn get_variable<'a>(&'a self, module: &'a ModuleScope, path: &Vec<String>) -> Result<VariableOrAttribute, AnalysisError> {
+    fn get_variable<'a>(
+        &'a self,
+        module: &'a ModuleScope,
+        path: &Vec<String>,
+    ) -> Result<VariableOrAttribute, AnalysisError> {
         match self.variables.get(&path[0]) {
             Some(ty) if path.len() == 1 => return Ok(VariableOrAttribute::Variable(ty.clone())),
-            Some(ty) => Ok(VariableOrAttribute::Attribute(
-                module.get_struct_member(
-                    Expression { 
-                            data: ExpressionData::Variable(vec![path[0].clone()]), 
-                            type_: ty.clone()
-                        }, 
-                        &path[1..]
-                )?
-            )),
-            None => module.get_variable(path)
+            Some(ty) => Ok(VariableOrAttribute::Attribute(module.get_struct_member(
+                Expression {
+                    data: ExpressionData::Variable(vec![path[0].clone()]),
+                    type_: ty.clone(),
+                },
+                &path[1..],
+            )?)),
+            None => module.get_variable(path),
         }
     }
 
@@ -371,17 +391,14 @@ impl FunctionScope {
         use ast::Statement::*;
         match stmt {
             Expression(expr) => Ok(Statement::Expression(self.type_expression(module, expr)?)),
-            LetAssignment {
-                name,
-                value,
-            } => {
+            LetAssignment { name, value } => {
                 let rhs = self.type_expression(module, value)?;
                 self.variables.insert(name.clone(), rhs.type_.clone());
                 Ok(Statement::LetAssignment {
                     name: name,
                     value: rhs,
                 })
-            },
+            }
             Assignment { lhs, rhs } => {
                 let rhs = self.type_expression(module, rhs)?;
                 let lhs = self.type_expression(module, lhs)?;
@@ -389,12 +406,14 @@ impl FunctionScope {
 
                 // TODO: coherce types
                 if lhs_ty != rhs.type_ {
-                    return Err(AnalysisError::UnexpectedType { expected: lhs_ty.clone(), found: rhs.type_ })
+                    return Err(AnalysisError::UnexpectedType {
+                        expected: lhs_ty.clone(),
+                        found: rhs.type_,
+                    });
                 }
 
                 Ok(Statement::Assignment { lhs, rhs })
-
-            },
+            }
             If {
                 conditions_and_bodies,
                 else_body,
@@ -405,15 +424,17 @@ impl FunctionScope {
                     let typed_condition = self.type_expression(module, condition)?;
 
                     if typed_condition.type_ != type_!(bool) {
-                        return Err(AnalysisError::UnexpectedType { expected: type_!(bool), found: typed_condition.type_ })
+                        return Err(AnalysisError::UnexpectedType {
+                            expected: type_!(bool),
+                            found: typed_condition.type_,
+                        });
                     }
 
                     let mut inner = vec![];
                     for stmt in body {
                         inner.push(self.analyse_statement(module, stmt)?);
                     }
-                    typed_conditions_and_bodies
-                        .push((typed_condition, inner))
+                    typed_conditions_and_bodies.push((typed_condition, inner))
                 }
 
                 match else_body {
@@ -433,11 +454,14 @@ impl FunctionScope {
                         else_body: None,
                     }),
                 }
-            },
+            }
             While { condition, body } => {
                 let condition = self.type_expression(module, condition)?;
                 if condition.type_ != type_!(bool) {
-                    return Err(AnalysisError::UnexpectedType { expected: type_!(bool), found: condition.type_ })
+                    return Err(AnalysisError::UnexpectedType {
+                        expected: type_!(bool),
+                        found: condition.type_,
+                    });
                 }
 
                 let mut inner = vec![];
@@ -445,34 +469,41 @@ impl FunctionScope {
                     inner.push(self.analyse_statement(module, stmt)?);
                 }
 
-                Ok(Statement::While { condition, body: inner })
-            },
+                Ok(Statement::While {
+                    condition,
+                    body: inner,
+                })
+            }
             Return(expr) => {
                 let expr = match expr {
                     Some(expr) => {
                         let typed = self.type_expression(module, expr)?;
                         if self.head.return_type != typed.type_ {
-                            return Err(AnalysisError::UnexpectedType { expected: self.head.return_type.clone(), found: typed.type_ })
+                            return Err(AnalysisError::UnexpectedType {
+                                expected: self.head.return_type.clone(),
+                                found: typed.type_,
+                            });
                         }
                         Some(typed)
-                    },
+                    }
                     None => {
                         if self.head.return_type != type_!(void) {
-                            return Err(AnalysisError::UnexpectedType { expected: self.head.return_type.clone(), found: type_!(void) })
+                            return Err(AnalysisError::UnexpectedType {
+                                expected: self.head.return_type.clone(),
+                                found: type_!(void),
+                            });
                         }
                         None
                     }
                 };
 
                 Ok(Statement::Return(expr))
-            },
-            other @ (
-                  FunctionDeclaration {..}
-                | ExternFunctionDeclaration {..}
-                | ExternBlock {..}
-                | StructDeclaration {..}
-                | Import(_)
-            ) => Err(AnalysisError::StatementInWrongContext {
+            }
+            other @ (FunctionDeclaration { .. }
+            | ExternFunctionDeclaration { .. }
+            | ExternBlock { .. }
+            | StructDeclaration { .. }
+            | Import(_)) => Err(AnalysisError::StatementInWrongContext {
                 statement: other,
                 found_context: "function body",
             }),
@@ -482,12 +513,12 @@ impl FunctionScope {
     fn new(source: Vec<ast::Statement>, head: FunctionHead) -> Self {
         let mut variables = HashMap::new();
 
-        variables.extend(head.arguments.iter().cloned().map(|(name, type_)| {
-            (
-                name.clone(),
-                type_
-            )
-        }));
+        variables.extend(
+            head.arguments
+                .iter()
+                .cloned()
+                .map(|(name, type_)| (name.clone(), type_)),
+        );
 
         FunctionScope {
             head,
@@ -529,22 +560,44 @@ impl FunctionScope {
                     (Type::Path(ltype), Type::Path(rtype)) => {
                         let ltypedef = module.get_type(ltype)?;
                         let rtypedef = module.get_type(rtype)?;
-                        
-                        Ok(match ltypedef.apply_binary(operator, Type::Path(rtypedef.path.clone())) {
-                            Some(type_) => Expression { data: ExpressionData::Binary { left: Box::new(left), operator, right: Box::new(right) }, type_: type_.clone() },
-                            None => {
-                                
-        
-                                match rtypedef.apply_binary(operator, left.type_.clone()) {
-                                    Some(type_) => Expression { data: ExpressionData::Binary { left: Box::new(left), operator, right: Box::new(right) }, type_: type_.clone() },
-                                    None => return Err(AnalysisError::UnsupportedBinaryOperation { op: operator, left: left.type_, right: right.type_ })
-                                }
-                            }
-                        })
-                    },
-                    (left, right) => Err(AnalysisError::UnsupportedBinaryOperation { op: operator, left: left.clone(), right: right.clone() })
-                }
 
+                        Ok(
+                            match ltypedef.apply_binary(operator, Type::Path(rtypedef.path.clone()))
+                            {
+                                Some(type_) => Expression {
+                                    data: ExpressionData::Binary {
+                                        left: Box::new(left),
+                                        operator,
+                                        right: Box::new(right),
+                                    },
+                                    type_: type_.clone(),
+                                },
+                                None => match rtypedef.apply_binary(operator, left.type_.clone()) {
+                                    Some(type_) => Expression {
+                                        data: ExpressionData::Binary {
+                                            left: Box::new(left),
+                                            operator,
+                                            right: Box::new(right),
+                                        },
+                                        type_: type_.clone(),
+                                    },
+                                    None => {
+                                        return Err(AnalysisError::UnsupportedBinaryOperation {
+                                            op: operator,
+                                            left: left.type_,
+                                            right: right.type_,
+                                        })
+                                    }
+                                },
+                            },
+                        )
+                    }
+                    (left, right) => Err(AnalysisError::UnsupportedBinaryOperation {
+                        op: operator,
+                        left: left.clone(),
+                        right: right.clone(),
+                    }),
+                }
             }
             ast::Expression::Unary { operator, argument } => {
                 let argument = self.type_expression(module, *argument)?;
@@ -556,29 +609,43 @@ impl FunctionScope {
                     TokenData::Not => UnaryOperator::Not,
                     TokenData::Ref => UnaryOperator::Ref,
                     TokenData::Star => UnaryOperator::Deref,
-                    other => return Err(AnalysisError::UnknownUnaryOperator(other))
+                    other => return Err(AnalysisError::UnknownUnaryOperator(other)),
                 };
-                
+
                 match (argument.type_.clone(), operator) {
                     (arg_type, UnaryOperator::Ref) => Ok(Expression {
-                        data: ExpressionData::Unary { operator: UnaryOperator::Ref, argument: Box::new(argument) },
-                        type_: Type::Reference(Box::new(arg_type))
+                        data: ExpressionData::Unary {
+                            operator: UnaryOperator::Ref,
+                            argument: Box::new(argument),
+                        },
+                        type_: Type::Reference(Box::new(arg_type)),
                     }),
                     (Type::Path(path), _) => {
                         let arg_type = module.get_type(&path)?;
                         match arg_type.apply_unary(operator) {
                             Some(ty) => Ok(Expression {
-                                data: ExpressionData::Unary { operator, argument: Box::new(argument) },
-                                type_: ty.clone()
+                                data: ExpressionData::Unary {
+                                    operator,
+                                    argument: Box::new(argument),
+                                },
+                                type_: ty.clone(),
                             }),
-                            None => Err(AnalysisError::UnsupportedUnaryOperation { op: operator, argument: Type::Path(path) })
+                            None => Err(AnalysisError::UnsupportedUnaryOperation {
+                                op: operator,
+                                argument: Type::Path(path),
+                            }),
                         }
-                    },
+                    }
                     (Type::Reference(inner), UnaryOperator::Deref) => Ok(Expression {
-                        data: ExpressionData::Unary { operator: UnaryOperator::Deref, argument: Box::new(argument) }, 
-                        type_: *inner
+                        data: ExpressionData::Unary {
+                            operator: UnaryOperator::Deref,
+                            argument: Box::new(argument),
+                        },
+                        type_: *inner,
                     }),
-                    (argument, op) => Err(AnalysisError::UnsupportedUnaryOperation { op, argument }),
+                    (argument, op) => {
+                        Err(AnalysisError::UnsupportedUnaryOperation { op, argument })
+                    }
                 }
             }
             ast::Expression::ParenBlock(inner) => {
@@ -655,8 +722,11 @@ impl FunctionScope {
                 })
             }
             ast::Expression::Variable(name) => Ok(match self.get_variable(module, &name)? {
-                VariableOrAttribute::Variable(var_type) => Expression { data: ExpressionData::Variable(name), type_: var_type },
-                VariableOrAttribute::Attribute(expr) => expr
+                VariableOrAttribute::Variable(var_type) => Expression {
+                    data: ExpressionData::Variable(name),
+                    type_: var_type,
+                },
+                VariableOrAttribute::Attribute(expr) => expr,
             }),
             ast::Expression::StructMember { instance, member } => {
                 let instance = self.type_expression(module, *instance)?;
@@ -665,29 +735,53 @@ impl FunctionScope {
                     Type::Path(path) => match module.get_type(&path)?.kind.clone() {
                         TypeKind::Struct { members } => {
                             // get the type of the member if it exists, otherwise return an error
-                            let member_type = members.get(&member)
-                                .ok_or(AnalysisError::UnknownMember { instance_type: instance.type_.clone(), member: member.clone() })?.clone();
+                            let member_type = members
+                                .get(&member)
+                                .ok_or(AnalysisError::UnknownMember {
+                                    instance_type: instance.type_.clone(),
+                                    member: member.clone(),
+                                })?
+                                .clone();
 
-                            Ok(Expression { data: ExpressionData::StructMember { instance: Box::new(instance), member }, type_: member_type })
-                        },
-                        _ => Err(AnalysisError::MemberAccessOnNonStruct { instance_type: instance.type_, member })
+                            Ok(Expression {
+                                data: ExpressionData::StructMember {
+                                    instance: Box::new(instance),
+                                    member,
+                                },
+                                type_: member_type,
+                            })
+                        }
+                        _ => Err(AnalysisError::MemberAccessOnNonStruct {
+                            instance_type: instance.type_,
+                            member,
+                        }),
                     },
-                    _ => todo!("member access for reference types")
+                    _ => todo!("member access for reference types"),
                 }
-            },
+            }
             ast::Expression::StructInit { path, mut members } => {
                 let ty = module.get_type(&path)?;
                 match ty.kind.clone() {
-                    TypeKind::Struct { members: decl_members } => {
+                    TypeKind::Struct {
+                        members: decl_members,
+                    } => {
                         let mut typed_members = HashMap::new();
 
                         for (m_name, m_type) in decl_members {
-                            let value = members.get(&m_name)
-                                .ok_or(AnalysisError::MissingMemberInInit { struct_name: path.clone(), missing: m_name.clone() })?.clone();
+                            let value = members
+                                .get(&m_name)
+                                .ok_or(AnalysisError::MissingMemberInInit {
+                                    struct_name: path.clone(),
+                                    missing: m_name.clone(),
+                                })?
+                                .clone();
                             let value = self.type_expression(module, value)?;
 
                             if value.type_ != m_type {
-                                return Err(AnalysisError::UnexpectedType { expected: m_type, found: value.type_ })
+                                return Err(AnalysisError::UnexpectedType {
+                                    expected: m_type,
+                                    found: value.type_,
+                                });
                             }
 
                             members.remove(&m_name);
@@ -696,21 +790,26 @@ impl FunctionScope {
                         }
 
                         if !members.is_empty() {
-                            return Err(AnalysisError::UnknownMember { 
-                                instance_type: Type::Path(path), 
-                                member: members.into_keys().next().expect("members is not empty") 
-                            })
+                            return Err(AnalysisError::UnknownMember {
+                                instance_type: Type::Path(path),
+                                member: members.into_keys().next().expect("members is not empty"),
+                            });
                         }
 
-                        Ok(Expression { 
-                            data: ExpressionData::StructInit { path: ty.path.clone(), members: typed_members }, 
-                            type_: Type::Path(ty.path)
+                        Ok(Expression {
+                            data: ExpressionData::StructInit {
+                                path: ty.path.clone(),
+                                members: typed_members,
+                            },
+                            type_: Type::Path(ty.path),
                         })
-                    },
-                    _ => Err(AnalysisError::NonStructInit { found: Type::Path(path) })
+                    }
+                    _ => Err(AnalysisError::NonStructInit {
+                        found: Type::Path(path),
+                    }),
                 }
             }
-            ast::Expression::Literal(lit) => module.type_literal(lit)
+            ast::Expression::Literal(lit) => module.type_literal(lit),
         }
     }
 }
@@ -720,7 +819,7 @@ pub(crate) enum Resource {
     Function(FunctionHead),
     Type(TypeDefinition),
     Variable(Type),
-    Module(ModuleScope)
+    Module(ModuleScope),
 }
 
 #[derive(Clone, Debug)]
@@ -744,9 +843,7 @@ impl ModuleScope {
         Ok(())
     }
 
-
     pub(crate) fn declaration_pass(&mut self) -> Result<(), AnalysisError> {
-
         for stmt in self.source.clone() {
             match stmt {
                 ast::Statement::FunctionDeclaration {
@@ -772,12 +869,15 @@ impl ModuleScope {
                         if return_type == type_!(void) {
                             return_type = type_!(int);
                         } else if return_type != type_!(int) {
-                            return Err(AnalysisError::UnexpectedType { expected: type_!(int), found: return_type });
+                            return Err(AnalysisError::UnexpectedType {
+                                expected: type_!(int),
+                                found: return_type,
+                            });
                         }
                     }
 
                     let mut path = vec![name.clone()];
-                    
+
                     if !(name == "main" && self.is_main) {
                         path = self.make_path_absolute(path);
                     }
@@ -791,7 +891,8 @@ impl ModuleScope {
 
                     let func = FunctionScope::new(body, head.clone());
 
-                    self.resources.insert(name.clone(), Resource::Function(head));
+                    self.resources
+                        .insert(name.clone(), Resource::Function(head));
                     self.declared_functions.insert(name.clone(), func);
 
                     self.statements
@@ -819,7 +920,6 @@ impl ModuleScope {
                                     arguments,
                                     is_variadic: Some(is_variadic),
                                 };
-                                
 
                                 self.resources.insert(name, Resource::Function(func));
                             }
@@ -831,56 +931,56 @@ impl ModuleScope {
 
                     self.externs.push(source)
                 }
-                ast::Statement::LetAssignment {
-                    name,
-                    value,
-                } => {
+                ast::Statement::LetAssignment { name, value } => {
                     let rhs = self.type_expression(value)?;
 
-                    self.resources.insert(name.clone(), Resource::Variable(rhs.type_.clone()));
-                    self.statements.push(Statement::LetAssignment {
-                        name,
-                        value: rhs,
-                    });
-                },
+                    self.resources
+                        .insert(name.clone(), Resource::Variable(rhs.type_.clone()));
+                    self.statements
+                        .push(Statement::LetAssignment { name, value: rhs });
+                }
                 ast::Statement::StructDeclaration { name, members } => {
                     let mut typed_members = HashMap::new();
                     for (m_name, m_type) in members {
                         if typed_members.contains_key(&m_name) {
-                            return Err(AnalysisError::DuplicateStructMember { struct_name: name, duplicated_member: m_name })
+                            return Err(AnalysisError::DuplicateStructMember {
+                                struct_name: name,
+                                duplicated_member: m_name,
+                            });
                         }
                         typed_members.insert(m_name, self.analyse_type(m_type)?);
                     }
 
-                    self.resources.insert(name.clone(), Resource::Type(TypeDefinition {
-                        path: self.make_path_absolute(vec![name.clone()]),
-                        kind: TypeKind::Struct { 
-                            members: typed_members
-                        }, 
-                        // TODO: operator overloading
-                        // (or at least provide a default internal implementation for `==`)
-                        supported_binary_operations: HashMap::new(),
-                        supported_unary_operations: HashMap::new()
-                    }));
+                    self.resources.insert(
+                        name.clone(),
+                        Resource::Type(TypeDefinition {
+                            path: self.make_path_absolute(vec![name.clone()]),
+                            kind: TypeKind::Struct {
+                                members: typed_members,
+                            },
+                            // TODO: operator overloading
+                            // (or at least provide a default internal implementation for `==`)
+                            supported_binary_operations: HashMap::new(),
+                            supported_unary_operations: HashMap::new(),
+                        }),
+                    );
                     self.statements.push(Statement::StructDeclaration { name })
-                },
+                }
                 ast::Statement::Import(kind) => match kind {
                     ast::Import::Absolute(_) => todo!("absolute paths"),
-                    ast::Import::Relative(name) => self.import_local_module(name)?
+                    ast::Import::Relative(name) => self.import_local_module(name)?,
                 },
-                other @ ( 
-                      ast::Statement::Expression(_) 
-                    | ast::Statement::If {..}
-                    | ast::Statement::While {..}
-                    | ast::Statement::Return {..}
-                    | ast::Statement::ExternFunctionDeclaration {..}
-                    | ast::Statement::Assignment {..}
-                ) => {
+                other @ (ast::Statement::Expression(_)
+                | ast::Statement::If { .. }
+                | ast::Statement::While { .. }
+                | ast::Statement::Return { .. }
+                | ast::Statement::ExternFunctionDeclaration { .. }
+                | ast::Statement::Assignment { .. }) => {
                     return Err(AnalysisError::StatementInWrongContext {
                         statement: other,
                         found_context: "module",
                     })
-                },
+                }
             }
         }
         Ok(())
@@ -891,7 +991,8 @@ impl ModuleScope {
 
         submodule.declaration_pass()?;
 
-        self.statements.push(Statement::Import(submodule.path.clone()));
+        self.statements
+            .push(Statement::Import(submodule.path.clone()));
 
         self.resources.insert(end, Resource::Module(submodule));
 
@@ -899,7 +1000,6 @@ impl ModuleScope {
     }
 
     pub(crate) fn execution_pass(&mut self) -> Result<(), AnalysisError> {
-
         let mut declared_functions = mem::take(&mut self.declared_functions);
 
         for func in declared_functions.values_mut() {
@@ -920,99 +1020,136 @@ impl ModuleScope {
     pub(crate) fn get_resource(&self, path: &Vec<String>) -> Result<Resource, AnalysisError> {
         if path.len() == 1 {
             if let Some(res) = builtins::TYPES.get(path) {
-                return Ok(res.clone())
+                return Ok(res.clone());
             }
         }
         let mut module = self;
-        
-        let common_path = self.path.iter()
+
+        let common_path = self
+            .path
+            .iter()
             .zip(path.iter())
             .map_while(|(namespace_item, path_item)| (namespace_item == path_item).then_some(()))
             .count();
 
         for (index, name) in path.iter().enumerate().skip(common_path) {
-            if index+1 == path.len() {
-                return module.resources.get(name).cloned()
+            if index + 1 == path.len() {
+                return module
+                    .resources
+                    .get(name)
+                    .cloned()
                     .ok_or_else(|| AnalysisError::UnknownResource(path.clone()));
             }
-            match module.resources.get(name).ok_or_else(|| AnalysisError::UnknownResource(path.clone()))? {
+            match module
+                .resources
+                .get(name)
+                .ok_or_else(|| AnalysisError::UnknownResource(path.clone()))?
+            {
                 Resource::Module(m) => module = m,
-                _ => return Err(AnalysisError::UnknownResource(path.clone()))
+                _ => return Err(AnalysisError::UnknownResource(path.clone())),
             }
         }
 
         Err(AnalysisError::UnknownResource(path.clone()))
     }
 
-    pub(crate) fn get_variable(&self, path: &Vec<String>) -> Result<VariableOrAttribute, AnalysisError> {
+    pub(crate) fn get_variable(
+        &self,
+        path: &Vec<String>,
+    ) -> Result<VariableOrAttribute, AnalysisError> {
         if let Some(Resource::Variable(var_type)) = builtins::TYPES.get(&path[..0]) {
-            return Ok(VariableOrAttribute::Attribute(
-                self.get_struct_member(
-                    Expression { 
-                            data: ExpressionData::Variable(Vec::from(&path[..0])), 
-                            type_: var_type.clone()
-                        }, 
-                        &path[1..]
-                )?
-            ));
+            return Ok(VariableOrAttribute::Attribute(self.get_struct_member(
+                Expression {
+                    data: ExpressionData::Variable(Vec::from(&path[..0])),
+                    type_: var_type.clone(),
+                },
+                &path[1..],
+            )?));
         }
 
         let mut module = self;
 
         for (index, name) in path.iter().enumerate() {
-            match module.resources.get(name).ok_or_else(|| AnalysisError::UnknownResource(path.clone()))? {
+            match module
+                .resources
+                .get(name)
+                .ok_or_else(|| AnalysisError::UnknownResource(path.clone()))?
+            {
                 Resource::Module(m) => module = m,
-                Resource::Variable(var_type) if index+1 == path.len() => return Ok(VariableOrAttribute::Variable(var_type.clone())),
-                Resource::Variable(var_type) => return Ok(VariableOrAttribute::Attribute(
-                    module.get_struct_member(
-                        Expression { 
-                                data: ExpressionData::Variable(Vec::from(&path[..=index])), 
-                                type_: var_type.clone()
-                            }, 
-                            &path[1..]
-                    )?
-                )),
-                _ => return Err(AnalysisError::UnknownResource(path.clone()))
+                Resource::Variable(var_type) if index + 1 == path.len() => {
+                    return Ok(VariableOrAttribute::Variable(var_type.clone()))
+                }
+                Resource::Variable(var_type) => {
+                    return Ok(VariableOrAttribute::Attribute(module.get_struct_member(
+                        Expression {
+                            data: ExpressionData::Variable(Vec::from(&path[..=index])),
+                            type_: var_type.clone(),
+                        },
+                        &path[1..],
+                    )?))
+                }
+                _ => return Err(AnalysisError::UnknownResource(path.clone())),
             }
         }
 
         Err(AnalysisError::UnknownVariable(path.clone()))
     }
 
-    pub(crate) fn get_struct_member(&self, instance: Expression, path: &[String]) -> Result<Expression, AnalysisError> {
+    pub(crate) fn get_struct_member(
+        &self,
+        instance: Expression,
+        path: &[String],
+    ) -> Result<Expression, AnalysisError> {
         let typedef = match instance.type_ {
             Type::Path(ref path) => self.get_type(path)?,
-            _ => return Err(AnalysisError::MemberAccessOnNonStruct { instance_type: instance.type_.clone(), member: path[0].clone() })
+            _ => {
+                return Err(AnalysisError::MemberAccessOnNonStruct {
+                    instance_type: instance.type_.clone(),
+                    member: path[0].clone(),
+                })
+            }
         };
         match typedef.kind {
-            TypeKind::Struct { members } => {
-                match members.get(&path[0]) {
-                    Some(member) => {
-                        let instance = Expression {
-                            data: ExpressionData::StructMember { instance: Box::new(instance), member: path[0].clone() }, 
-                            type_: member.clone()
-                        };
-                        if path.len() == 1 {
-                            Ok(instance)
-                        } else {
-                            self.get_struct_member(instance, &path[1..])
-                        }
-                    },
-                    None => Err(AnalysisError::UnknownMember { instance_type: instance.type_.clone(), member: path[0].clone() })
+            TypeKind::Struct { members } => match members.get(&path[0]) {
+                Some(member) => {
+                    let instance = Expression {
+                        data: ExpressionData::StructMember {
+                            instance: Box::new(instance),
+                            member: path[0].clone(),
+                        },
+                        type_: member.clone(),
+                    };
+                    if path.len() == 1 {
+                        Ok(instance)
+                    } else {
+                        self.get_struct_member(instance, &path[1..])
+                    }
                 }
+                None => Err(AnalysisError::UnknownMember {
+                    instance_type: instance.type_.clone(),
+                    member: path[0].clone(),
+                }),
             },
-            _ => Err(AnalysisError::MemberAccessOnNonStruct { instance_type: instance.type_.clone(), member: path[0].clone() })
-        } 
+            _ => Err(AnalysisError::MemberAccessOnNonStruct {
+                instance_type: instance.type_.clone(),
+                member: path[0].clone(),
+            }),
+        }
     }
 
     pub(crate) fn get_function(&self, name: &String) -> Result<&FunctionScope, AnalysisError> {
-        self.declared_functions.get(name).ok_or(AnalysisError::UnknownFunction(vec![name.clone()]))
+        self.declared_functions
+            .get(name)
+            .ok_or(AnalysisError::UnknownFunction(vec![name.clone()]))
     }
 
-    pub(crate) fn get_function_head(&self, path: &Vec<String>) -> Result<FunctionHead, AnalysisError> {
+    pub(crate) fn get_function_head(
+        &self,
+        path: &Vec<String>,
+    ) -> Result<FunctionHead, AnalysisError> {
         match self.get_resource(path)? {
             Resource::Function(func) => Ok(func),
-            _ => Err(AnalysisError::UnknownFunction(path.clone()))
+            _ => Err(AnalysisError::UnknownFunction(path.clone())),
         }
     }
 
@@ -1024,7 +1161,9 @@ impl ModuleScope {
     }
 
     pub fn main(root: PathBuf) -> Result<Self, TranspileError> {
-        let mut root = root.canonicalize().map_err(|e| TranspileError::FileError(e))?;
+        let mut root = root
+            .canonicalize()
+            .map_err(|e| TranspileError::FileError(e))?;
 
         let package = root.file_stem().unwrap().to_str().unwrap().to_string();
 
@@ -1055,12 +1194,23 @@ impl ModuleScope {
     }
 
     pub(crate) fn child(&self, end: String) -> Result<Self, AnalysisError> {
-        let ModuleScope { file, mut path, is_main, .. } = self.clone();
+        let ModuleScope {
+            file,
+            mut path,
+            is_main,
+            ..
+        } = self.clone();
 
         path.push(end.clone());
 
-        if !is_main && file.parent().unwrap().file_name().unwrap() != file.file_stem().expect("module file have a stem") {
-            return Err(AnalysisError::RootModuleFileOutside { path: path, file: file })
+        if !is_main
+            && file.parent().unwrap().file_name().unwrap()
+                != file.file_stem().expect("module file have a stem")
+        {
+            return Err(AnalysisError::RootModuleFileOutside {
+                path: path,
+                file: file,
+            });
         }
 
         let mut single_file_module = file.clone();
@@ -1077,23 +1227,25 @@ impl ModuleScope {
 
         let single_exists = single_file_module.is_file();
         let multiple_exists = multiple_files_module_root.is_file();
-        
+
         // module file resolution
         let file = if single_exists && multiple_exists {
-                                return Err(AnalysisError::DuplicateModuleFile { path: path, files: (single_file_module, multiple_files_module_root) })
-                            } else if single_exists {
-                                single_file_module
-                            } else if multiple_exists {
-                                multiple_files_module_root
-                            } else {
-                                return Err(AnalysisError::UnknownModule(path))
-                            };
-
+            return Err(AnalysisError::DuplicateModuleFile {
+                path: path,
+                files: (single_file_module, multiple_files_module_root),
+            });
+        } else if single_exists {
+            single_file_module
+        } else if multiple_exists {
+            multiple_files_module_root
+        } else {
+            return Err(AnalysisError::UnknownModule(path));
+        };
 
         let source = parser::Parser::from_source(&fs::read_to_string(&file).unwrap())
             .parse()
             .map_err(|e| AnalysisError::ParserError(e))?;
-        
+
         Ok(ModuleScope {
             file,
             path,
@@ -1106,9 +1258,17 @@ impl ModuleScope {
         })
     }
 
-
     fn type_expression(&self, expression: ast::Expression) -> Result<Expression, AnalysisError> {
-        FunctionScope::new(vec![], FunctionHead { return_type: Type::Void, arguments: vec![], path: vec![], is_variadic: None }).type_expression(self, expression)
+        FunctionScope::new(
+            vec![],
+            FunctionHead {
+                return_type: Type::Void,
+                arguments: vec![],
+                path: vec![],
+                is_variadic: None,
+            },
+        )
+        .type_expression(self, expression)
     }
 
     fn analyse_new_type(&self, ty: ast::Type) -> Type {
@@ -1133,7 +1293,9 @@ impl ModuleScope {
     fn analyse_type(&self, ty: ast::Type) -> Result<Type, AnalysisError> {
         Ok(match ty {
             ast::Type::Void => Type::Void,
-            ast::Type::Path(name) => Type::Path(self.make_path_absolute(self.get_type(&name).map(|_| name)?)),
+            ast::Type::Path(name) => {
+                Type::Path(self.make_path_absolute(self.get_type(&name).map(|_| name)?))
+            }
             ast::Type::Reference(inner) => Type::Reference(Box::new(self.analyse_type(*inner)?)),
         })
     }
@@ -1151,26 +1313,73 @@ impl ModuleScope {
     fn type_literal(&self, value: Literal) -> Result<Expression, AnalysisError> {
         let type_ = match &value {
             Literal::String(_) => type_!(&char),
-            Literal::Integer { value: _, signed, size } => match size {
-                None => if *signed { type_!(int) } else { type_!(uint) },
-                Some(8) => if *signed { type_!(int8) } else { type_!(uint8) },
-                Some(16) => if *signed { type_!(int16) } else { type_!(uint16) },
-                Some(32) => if *signed { type_!(int32) } else { type_!(uint32) },
-                Some(64) => if *signed { type_!(int64) } else { type_!(uint64) },
-                Some(other) => return Err(AnalysisError::UnknownIntegerSize { found: *other, expected: &[8, 16, 32, 64] })
+            Literal::Integer {
+                value: _,
+                signed,
+                size,
+            } => match size {
+                None => {
+                    if *signed {
+                        type_!(int)
+                    } else {
+                        type_!(uint)
+                    }
+                }
+                Some(8) => {
+                    if *signed {
+                        type_!(int8)
+                    } else {
+                        type_!(uint8)
+                    }
+                }
+                Some(16) => {
+                    if *signed {
+                        type_!(int16)
+                    } else {
+                        type_!(uint16)
+                    }
+                }
+                Some(32) => {
+                    if *signed {
+                        type_!(int32)
+                    } else {
+                        type_!(uint32)
+                    }
+                }
+                Some(64) => {
+                    if *signed {
+                        type_!(int64)
+                    } else {
+                        type_!(uint64)
+                    }
+                }
+                Some(other) => {
+                    return Err(AnalysisError::UnknownIntegerSize {
+                        found: *other,
+                        expected: &[8, 16, 32, 64],
+                    })
+                }
             },
             Literal::Float { value: _, size } => match size {
                 None => type_!(float),
                 Some(32) => type_!(float32),
                 Some(64) => type_!(float64),
                 Some(128) => type_!(float128),
-                Some(other) => return Err(AnalysisError::UnknownFloatSize { found: *other, expected: &[32, 64, 128] })
-            }
+                Some(other) => {
+                    return Err(AnalysisError::UnknownFloatSize {
+                        found: *other,
+                        expected: &[32, 64, 128],
+                    })
+                }
+            },
             Literal::Null => type_!(&void),
-            Literal::False | Literal::True => type_!(bool)
+            Literal::False | Literal::True => type_!(bool),
         };
 
-        Ok(Expression { data: ExpressionData::Literal(value), type_ })
+        Ok(Expression {
+            data: ExpressionData::Literal(value),
+            type_,
+        })
     }
 
     pub fn transpile(self, target_dir: PathBuf) -> Result<(), TranspileError> {

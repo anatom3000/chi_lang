@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::vec;
 
-use crate::ast::{self, Expression, Statement, Type, Literal, Import};
+use crate::ast::{self, Expression, Import, Literal, Statement, Type};
 use crate::lexer::{self, Token, TokenData};
 
 #[derive(Debug, Clone)]
@@ -47,7 +47,7 @@ pub struct Parser {
     pub tokens: Vec<Token>,
     pub errors: Vec<ParserError>,
     current: usize,
-    no_struct_init: bool
+    no_struct_init: bool,
 }
 
 macro_rules! binary_operator {
@@ -114,7 +114,7 @@ impl Parser {
         loop {
             match self.tokens.get(self.current)?.data.clone() {
                 TokenData::NewLine => self.current += 1,
-                token => return Some(token)
+                token => return Some(token),
             }
         }
     }
@@ -130,11 +130,7 @@ impl Parser {
         self.equality()
     }
 
-    binary_operator!(
-        equality,
-        TokenData::Equal | TokenData::NotEqual,
-        comparison
-    );
+    binary_operator!(equality, TokenData::Equal | TokenData::NotEqual, comparison);
     binary_operator!(
         comparison,
         TokenData::Greater
@@ -148,7 +144,13 @@ impl Parser {
 
     fn unary(&mut self) -> Option<Expression> {
         match self.current_token() {
-            Some(TokenData::Not | TokenData::Plus | TokenData::Minus | TokenData::Ref | TokenData::Star) => {
+            Some(
+                TokenData::Not
+                | TokenData::Plus
+                | TokenData::Minus
+                | TokenData::Ref
+                | TokenData::Star,
+            ) => {
                 let operator = self.current_token().expect("current token should be valid");
                 self.current += 1;
                 return Some(Expression::Unary {
@@ -181,13 +183,18 @@ impl Parser {
             Some(token) => {
                 self.current += 1;
                 match token {
-                    TokenData::Integer(value, signed_and_size) => Expression::Literal(self.integer(value, signed_and_size)),
-                    TokenData::Float(value, size) => Expression::Literal(Literal::Float { value: value, size: size }),
+                    TokenData::Integer(value, signed_and_size) => {
+                        Expression::Literal(self.integer(value, signed_and_size))
+                    }
+                    TokenData::Float(value, size) => Expression::Literal(Literal::Float {
+                        value: value,
+                        size: size,
+                    }),
                     TokenData::Identifier(_) => self.identifier_primary()?,
                     TokenData::String(content) => {
                         Expression::Literal(ast::Literal::String(content))
                     }
-                    
+
                     TokenData::True => Expression::Literal(ast::Literal::True),
                     TokenData::False => Expression::Literal(ast::Literal::False),
                     TokenData::Null => Expression::Literal(ast::Literal::Null),
@@ -228,8 +235,11 @@ impl Parser {
                     match self.current_token() {
                         Some(TokenData::Identifier(member)) => {
                             self.current += 1;
-                            expr = Expression::StructMember { instance: Box::new(expr), member }
-                        },
+                            expr = Expression::StructMember {
+                                instance: Box::new(expr),
+                                member,
+                            }
+                        }
                         _ => {
                             self.errors.push(ParserError::Expected {
                                 rule: "identifier after `.`",
@@ -238,8 +248,8 @@ impl Parser {
                             return None;
                         }
                     }
-                },
-                _ => break
+                }
+                _ => break,
             }
         }
         Some(expr)
@@ -256,7 +266,7 @@ impl Parser {
                     function: path,
                     arguments: args,
                 }
-            },
+            }
             Some(TokenData::LeftBrace) if !self.no_struct_init => {
                 self.current += 1;
 
@@ -265,8 +275,8 @@ impl Parser {
                     match self.current_token_no_whitespace() {
                         Some(TokenData::RightBrace) => {
                             self.current += 1;
-                            break
-                        },
+                            break;
+                        }
                         Some(TokenData::Identifier(m_name)) => {
                             self.current += 1;
                             match self.current_token() {
@@ -277,8 +287,8 @@ impl Parser {
                                         Some(TokenData::Comma) => self.current += 1,
                                         Some(TokenData::RightBrace) => {
                                             self.current += 1;
-                                            break
-                                        },
+                                            break;
+                                        }
                                         _ => {
                                             self.errors.push(ParserError::Expected {
                                                 rule: "'}' (end of struct initialization) or ',' (member seperator)",
@@ -287,8 +297,7 @@ impl Parser {
                                             return None;
                                         }
                                     }
-                        
-                                },
+                                }
                                 _ => {
                                     self.errors.push(ParserError::Expected {
                                         rule: "`:` after member name in struct initialization",
@@ -309,7 +318,7 @@ impl Parser {
                 }
 
                 Expression::StructInit { path, members }
-            },
+            }
 
             _ => Expression::Variable(path),
         })
@@ -342,10 +351,22 @@ impl Parser {
         }
     }
 
-    fn integer(&mut self, value: String, signed_and_size: Option<(bool, Option<usize>)>) -> Literal {
+    fn integer(
+        &mut self,
+        value: String,
+        signed_and_size: Option<(bool, Option<usize>)>,
+    ) -> Literal {
         match signed_and_size {
-            Some((signed, size)) => Literal::Integer { value, signed, size },
-            None => Literal::Integer { value, signed: true, size: None }
+            Some((signed, size)) => Literal::Integer {
+                value,
+                signed,
+                size,
+            },
+            None => Literal::Integer {
+                value,
+                signed: true,
+                size: None,
+            },
         }
     }
 }
@@ -381,13 +402,11 @@ impl Parser {
 
     fn type_(&mut self) -> Option<Type> {
         let ty = match self.current_token() {
-            Some(TokenData::Identifier(_)) => {
-                Type::Path(self.resource_path()?)
-            },
+            Some(TokenData::Identifier(_)) => Type::Path(self.resource_path()?),
             Some(TokenData::Ref) => {
                 self.current += 1;
                 Type::Reference(Box::new(self.type_()?))
-            },
+            }
             Some(TokenData::LeftParen) => {
                 self.current += 1;
                 let ty = self.type_()?;
@@ -395,13 +414,16 @@ impl Parser {
                     Some(TokenData::RightParen) => {
                         self.current += 1;
                         ty
-                    },
+                    }
                     _ => {
-                        self.errors.push(ParserError::Expected { rule: "')' closing type paren block", found: self.full_current_token() });
-                        return None
+                        self.errors.push(ParserError::Expected {
+                            rule: "')' closing type paren block",
+                            found: self.full_current_token(),
+                        });
+                        return None;
                     }
                 }
-            },
+            }
             // Some(TokenData::Def) => {
             //     self.current += 1;
             //     match self.current_token() {
@@ -426,8 +448,11 @@ impl Parser {
             //     }
             // },
             _ => {
-                self.errors.push(ParserError::Expected { rule: "type", found: self.full_current_token() });
-                return None
+                self.errors.push(ParserError::Expected {
+                    rule: "type",
+                    found: self.full_current_token(),
+                });
+                return None;
             }
         };
 
@@ -526,19 +551,19 @@ impl Parser {
             Some(TokenData::If) => {
                 self.current += 1;
                 self.if_stmt()
-            },
+            }
             Some(TokenData::Struct) => {
                 self.current += 1;
                 self.struct_stmt()
-            },
+            }
             Some(TokenData::While) => {
                 self.current += 1;
                 self.while_stmt()
-            },
+            }
             Some(TokenData::Return) => {
                 self.current += 1;
                 self.return_stmt()
-            },
+            }
             Some(TokenData::Import) => {
                 self.current += 1;
                 self.import_stmt()
@@ -546,7 +571,7 @@ impl Parser {
             Some(_) => {
                 let expr = self.expression()?;
                 self.expr_stmt(expr)
-            },
+            }
             None => {
                 self.errors.push(ParserError::Expected {
                     rule: "statement",
@@ -563,8 +588,8 @@ impl Parser {
                 self.current += 1;
                 let rhs = self.expression()?;
                 Statement::Assignment { lhs: expr, rhs }
-            },
-            _ => Statement::Expression(expr)
+            }
+            _ => Statement::Expression(expr),
         })
     }
 
@@ -632,9 +657,12 @@ impl Parser {
         let source = match self.current_token() {
             Some(TokenData::String(content)) => content,
             _ => {
-                self.errors.push(ParserError::Expected { rule: "extern header path", found: self.full_current_token() });
-                return None
-            },
+                self.errors.push(ParserError::Expected {
+                    rule: "extern header path",
+                    found: self.full_current_token(),
+                });
+                return None;
+            }
         };
 
         self.current += 1;
@@ -665,9 +693,10 @@ impl Parser {
                     self.current += 1;
                     return Some(statements);
                 }
-                None => {
-                    self.errors.push(ParserError::Expected { rule: "function declaration or `}` in extern block", found: None })
-                },
+                None => self.errors.push(ParserError::Expected {
+                    rule: "function declaration or `}` in extern block",
+                    found: None,
+                }),
                 _ => break 'consume_separator,
             }
         }
@@ -680,8 +709,8 @@ impl Parser {
                         rule: "def statement in extern block",
                         found: self.full_current_token(),
                     });
-                    return None
-                },
+                    return None;
+                }
             }
 
             statements.push(self.extern_def_stmt()?);
@@ -866,7 +895,7 @@ impl Parser {
                     rule: "struct name",
                     found: self.full_current_token(),
                 });
-                return None
+                return None;
             }
         };
 
@@ -879,7 +908,7 @@ impl Parser {
                     rule: "`{` after struct name",
                     found: self.full_current_token(),
                 });
-                return None
+                return None;
             }
         }
 
@@ -896,37 +925,37 @@ impl Parser {
                             match self.current_token_no_whitespace() {
                                 Some(TokenData::RightBrace) => {
                                     self.current += 1;
-                                    break
-                                },
+                                    break;
+                                }
                                 Some(TokenData::Comma) => self.current += 1,
                                 _ => {
                                     self.errors.push(ParserError::Expected {
                                         rule: "`,` or `}` in struct declaration",
                                         found: self.full_current_token(),
                                     });
-                                    return None
+                                    return None;
                                 }
                             }
-                        },
+                        }
                         _ => {
                             self.errors.push(ParserError::Expected {
                                 rule: "`:` after struct member name",
                                 found: self.full_current_token(),
                             });
-                            return None
+                            return None;
                         }
                     }
                 }
                 Some(TokenData::RightBrace) => {
                     self.current += 1;
-                    break
+                    break;
                 }
                 _ => {
                     self.errors.push(ParserError::Expected {
                         rule: "identifier or `}` in struct declaration",
                         found: self.full_current_token(),
                     });
-                    return None
+                    return None;
                 }
             }
         }
@@ -934,7 +963,6 @@ impl Parser {
     }
 
     fn if_stmt(&mut self) -> Option<Statement> {
-
         let mut conditions_and_bodies = vec![];
 
         self.no_struct_init = true;
@@ -951,8 +979,8 @@ impl Parser {
                     rule: "if block body",
                     found: self.full_current_token(),
                 });
-                return None
-            },
+                return None;
+            }
         };
 
         conditions_and_bodies.push((condition, body));
@@ -966,7 +994,7 @@ impl Parser {
                     self.no_struct_init = true;
                     let condition = self.expression()?;
                     self.no_struct_init = false;
-            
+
                     match self.current_token_no_whitespace() {
                         Some(TokenData::LeftBrace) => {
                             self.current += 1;
@@ -978,8 +1006,8 @@ impl Parser {
                                 rule: "elif block body",
                                 found: self.full_current_token(),
                             });
-                            return None
-                        },
+                            return None;
+                        }
                     }
                 }
                 Some(TokenData::Else) => {
@@ -995,8 +1023,8 @@ impl Parser {
                                 rule: "else block body",
                                 found: self.full_current_token(),
                             });
-                            return None
-                        },
+                            return None;
+                        }
                     }
                 }
                 _ => break,
@@ -1009,11 +1037,10 @@ impl Parser {
     }
 
     fn while_stmt(&mut self) -> Option<Statement> {
-
         self.no_struct_init = true;
         let condition = self.expression()?;
         self.no_struct_init = false;
-        
+
         let body = match self.current_token_no_whitespace() {
             Some(TokenData::LeftBrace) => {
                 self.current += 1;
@@ -1024,8 +1051,8 @@ impl Parser {
                     rule: "if block body",
                     found: self.full_current_token(),
                 });
-                return None
-            },
+                return None;
+            }
         };
 
         Some(Statement::While { condition, body })
@@ -1034,10 +1061,10 @@ impl Parser {
     fn return_stmt(&mut self) -> Option<Statement> {
         Some(match self.current_token() {
             Some(TokenData::NewLine | TokenData::Semicolon) | None => Statement::Return(None),
-            _ => Statement::Return(Some(self.expression()?))
+            _ => Statement::Return(Some(self.expression()?)),
         })
     }
-    
+
     fn import_stmt(&mut self) -> Option<Statement> {
         Some(match self.current_token() {
             Some(TokenData::Dot) => {
@@ -1046,14 +1073,17 @@ impl Parser {
                     Some(TokenData::Identifier(name)) => {
                         self.current += 1;
                         Statement::Import(Import::Relative(name))
-                    },
+                    }
                     _ => {
-                        self.errors.push(ParserError::Expected { rule: "identifier", found: self.full_current_token() });
-                        return None
+                        self.errors.push(ParserError::Expected {
+                            rule: "identifier",
+                            found: self.full_current_token(),
+                        });
+                        return None;
                     }
                 }
-            },
-            _ => Statement::Import(Import::Absolute(self.resource_path()?))
+            }
+            _ => Statement::Import(Import::Absolute(self.resource_path()?)),
         })
     }
 
@@ -1067,14 +1097,15 @@ impl Parser {
                     self.current += 1;
                     match self.current_token() {
                         Some(TokenData::Dot) => self.current += 1,
-                        _ => {
-                            return Some(path)
-                        },
+                        _ => return Some(path),
                     }
-                },
+                }
                 _ => {
-                    self.errors.push(ParserError::Expected { rule: "identifier in resource path", found: self.full_current_token() });
-                    return None
+                    self.errors.push(ParserError::Expected {
+                        rule: "identifier in resource path",
+                        found: self.full_current_token(),
+                    });
+                    return None;
                 }
             }
         }

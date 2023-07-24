@@ -8,11 +8,11 @@ pub enum Literal {
     Integer {
         value: String,
         signed: bool,
-        size: Option<usize>
+        size: Option<usize>,
     },
     Float {
         value: String,
-        size: Option<usize>
+        size: Option<usize>,
     },
     Null,
     True,
@@ -37,11 +37,11 @@ pub enum Expression {
     },
     StructMember {
         instance: Box<Expression>,
-        member: String
+        member: String,
     },
     StructInit {
         path: Vec<String>,
-        members: HashMap<String, Expression>
+        members: HashMap<String, Expression>,
     },
     Variable(Vec<String>),
     Literal(Literal),
@@ -86,7 +86,7 @@ pub enum Statement {
     },
     StructDeclaration {
         name: String,
-        members: HashMap<String, Type>
+        members: HashMap<String, Type>,
     },
     ExternFunctionDeclaration {
         name: String,
@@ -100,14 +100,14 @@ pub enum Statement {
     },
     While {
         condition: Expression,
-        body: Vec<Statement>
+        body: Vec<Statement>,
     },
     Return(Option<Expression>),
-    Import(Import)
+    Import(Import),
 }
 
 #[derive(Debug, Clone)]
 pub enum Import {
     Relative(String),
-    Absolute(Vec<String>)
+    Absolute(Vec<String>),
 }
