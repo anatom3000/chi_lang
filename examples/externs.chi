@@ -1,14 +1,18 @@
 // import the C standard library
 extern "<stdio.h>" {
+    // Extern functions are brought into the current namespace as if they were defined as regaular functions.
+    // "..." at the end of the argument list means that the extern function is variadic:
+    // Here, Chi's type checker will accept any number of arguments of any type after `fmt_str`.
     def printf(fmt_str: &char, ...)
 }
 
 // import other C libraries too!
-extern "raylib.h" {
-    def GetScreenWidth() -> int
-    def GetScreenHeight() -> int
-}
+// (you'll need to manually edit the generated Makefile to use third party libraries)
+// extern "raylib.h" {
+//     def GetScreenWidth() -> int
+//     def GetScreenHeight() -> int
+// }
 
 def main() {
-    printf("Window size is (%i, %i)", GetScreenWidth(), GetScreenHeight())
+    printf("WOW LOOK AT MY INT --> %i <--", 42)
 }

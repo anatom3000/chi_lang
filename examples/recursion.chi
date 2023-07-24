@@ -1,3 +1,7 @@
+extern "<stdio.h>" {
+    def printf(fmt_str: &char, ...)
+}
+
 def fib(n: int) -> int {
     if n < 2 {
         return 1

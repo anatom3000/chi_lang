@@ -1037,10 +1037,10 @@ impl ModuleScope {
             Literal::String(_) => type_!(&char),
             Literal::Integer { value: _, signed, size } => match size {
                 None => if *signed { type_!(int) } else { type_!(uint) },
-                Some(8) => if *signed { type_!(i8) } else { type_!(u8) },
-                Some(16) => if *signed { type_!(i16) } else { type_!(u16) },
-                Some(32) => if *signed { type_!(i32) } else { type_!(u32) },
-                Some(64) => if *signed { type_!(i64) } else { type_!(u64) },
+                Some(8) => if *signed { type_!(int8) } else { type_!(uint8) },
+                Some(16) => if *signed { type_!(int16) } else { type_!(uint16) },
+                Some(32) => if *signed { type_!(int32) } else { type_!(uint32) },
+                Some(64) => if *signed { type_!(int64) } else { type_!(uint64) },
                 Some(other) => return Err(AnalysisError::UnknownIntegerSize { found: *other, expected: &[8, 16, 32, 64] })
             },
             Literal::Float { value: _, size } => match size {
@@ -1050,7 +1050,7 @@ impl ModuleScope {
                 Some(128) => type_!(float128),
                 Some(other) => return Err(AnalysisError::UnknownFloatSize { found: *other, expected: &[32, 64, 128] })
             }
-            Literal::Null => type_!(void),
+            Literal::Null => type_!(&void),
             Literal::False | Literal::True => type_!(bool)
         };
 

@@ -21,7 +21,7 @@ pub fn compile(target_dir: PathBuf) -> Result<(), CompilationError> {
         .output()
         .map_err(|e| CompilationError::IoError(e))?;
 
-    if !output.status.success() {
+    if !output.stderr.is_empty() {
         return Err(CompilationError::CompilerError(String::from_utf8_lossy(output.stderr.as_slice()).to_string()));
     }
 

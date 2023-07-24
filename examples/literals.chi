@@ -16,9 +16,9 @@ def main() {
     let message = "Hello, Chi!" // type: &char (arrays are not implemented yet)
 
     // bool
-    let the_truth = true
-    let is_chi_good = false
+    let the_truth = true    // type: bool
+    let is_chi_good = false // type: bool
 
     // special
-    let billion_dollar_mistake = null
+    let billion_dollar_mistake = null // type: &void
 }

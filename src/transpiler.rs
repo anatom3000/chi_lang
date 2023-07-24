@@ -54,7 +54,8 @@ impl ModuleTranspiler {
             is_main
         };
 
-        let mut includes = vec![];
+        // TODO: lazily add includes (e.g. include stddef.h only when NULL is used)
+        let mut includes = vec!["<stddef.h>".to_string(), "<stdbool.h>".to_string(), "<stdint.h>".to_string()];
         for ext in mem::take(&mut new.scope.externs) {
             if ext.starts_with('<') && ext.ends_with('>') {
                 if includes.contains(&ext) {
@@ -286,7 +287,7 @@ impl ModuleTranspiler {
                     Some(32) => format!("{}f", value),
                     _ => value
                 },
-                Literal::Null => "null".to_string(),
+                Literal::Null => "NULL".to_string(),
                 Literal::True => "true".to_string(),
                 Literal::False => "false".to_string(),
             },
@@ -343,28 +344,29 @@ impl ModuleTranspiler {
     fn transpile_type(&self, path: Vec<String>) -> String {
         if path.len() == 1 {
             match path[0].as_str() {
-                "int" => "int",
-                "float" => "double",
-                "bool" => "_Bool",
+                "int" => "int".to_string(),
+                "uint" => "unsigned int".to_string(),
+                "float" => "double".to_string(),
+                "bool" => "_Bool".to_string(),
         
-                "int8" => "int8_t",
-                "uint8" => "uint8_t",
-                "int16" => "int16_t",
-                "uint16" => "uint16_t",
-                "int32" => "int32_t",
-                "uint32" => "int32_t",
-                "int64" => "uint64_t",
-                "uint64" => "uint64_t",
+                "int8" => "int8_t".to_string(),
+                "uint8" => "uint8_t".to_string(),
+                "int16" => "int16_t".to_string(),
+                "uint16" => "uint16_t".to_string(),
+                "int32" => "int32_t".to_string(),
+                "uint32" => "int32_t".to_string(),
+                "int64" => "uint64_t".to_string(),
+                "uint64" => "uint64_t".to_string(),
         
-                "float32" => "float",
-                "float64" => "double",
-                "float128" => "long double",
+                "float32" => "float".to_string(),
+                "float64" => "double".to_string(),
+                "float128" => "long double".to_string(),
         
-                "usize" => "size_t",
-                "isize" => "ptrdiff_t",
+                "usize" => "size_t".to_string(),
+                "isize" => "ptrdiff_t".to_string(),
         
-                other => other
-            }.to_string()
+                _ => self.transpile_path(&self.to_absolute_path(path))
+            }
     
         } else {
             self.transpile_path(&self.to_absolute_path(path))
