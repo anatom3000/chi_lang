@@ -385,24 +385,22 @@ impl ModuleTranspiler {
 }
 
 pub(crate) fn generate_makefile(module_name: &str, files: &[String]) -> String {
+    let srcs = files.into_iter().map(|x| format!("$(ROOT_DIR){}", &x[1..])).collect::<Vec<_>>().join(" ");
+
     // base makefile credit: https://makefiletutorial.com/#makefile-cookbook
-    format!("
-TARGET_EXEC := {}
-BUILD_DIR := ./build
+    format!("\
+ROOT_DIR := $(dir $(lastword $(MAKEFILE_LIST)))
 
-SRCS := {}
-TARGET_EXEC := final_program
+SRCS := {srcs}
+TARGET_EXEC := {module_name}
 
-BUILD_DIR := ./build
-SRC_DIRS := ./src
+BUILD_DIR := $(ROOT_DIR)build
 
 OBJS := $(SRCS:%=$(BUILD_DIR)/%.o)
 
-# String substitution (suffix version without %).
-# As an example, ./build/hello.cpp.o turns into ./build/hello.cpp.d
 DEPS := $(OBJS:.o=.d)
 
-INC_DIRS := .
+INC_DIRS := $(ROOT_DIR)
 INC_FLAGS := $(addprefix -I,$(INC_DIRS))
 
 CPPFLAGS := $(INC_FLAGS) -MMD -MP
@@ -419,6 +417,5 @@ clean:
 	rm -r $(BUILD_DIR)
 
 -include $(DEPS)
-",
-    module_name, files.join(" "))
+")
 }
