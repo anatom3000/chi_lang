@@ -1,4 +1,41 @@
-# The χ (chi) programming language
+# The χ (chi) Programming Language
+
+### Getting Started
+
+The `examples/` folder shows the various the basic syntax and semantics of the language.
+
+Example program (from `examples/recursion.chi`): 
+```groovy
+extern "<stdio.h>" {
+    def printf(fmt_str: &char, ...)
+}
+
+def fib(n: int) -> int {
+    if n < 2 {
+        return 1
+    }
+    return fib(n-1) + fib(n-2)
+}
+
+def main() {
+    printf("fib(9) = %i\n", fib(9))
+}
+```
+
+Try running it:
+```console
+cargo run -- examples/recursion.chi
+```
+
+
+To compile a program, simply pass it as the first argument to the program :
+```console
+cargo run -- program.chi
+```
+
+### Test
+`cargo test` compiles and runs every examples in the `examples/` folder and check if any of them failed to compile or run.
+> All examples should compile and return `0`.
 
 ### Syntax
 > Note: `?sep` will be used to indicate that the block before can be omitted at the last repetition of a `*` or `+` block
