@@ -41,8 +41,6 @@ fn main() {
 
     println!("Running `{target_dir}/build/{module_name}`...");
     println!();
-    Command::new("sh")
-        .arg("-c")
-        .arg(format!("{target_dir}/build/{module_name}"))
-        .status().unwrap();
+    Command::new(format!("{target_dir}/build/{module_name}")).spawn().unwrap();
+
 }

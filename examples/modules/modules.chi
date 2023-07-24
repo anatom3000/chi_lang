@@ -13,6 +13,6 @@ def main() {
         y: 0.0,
     }
 
-    utils.printf("math: 2+3+4=%i", a)
-    utils.printf("The origin is at: (%i, %i)", origin.x, origin.y)
+    utils.printf("Math: 2+3+4=%i\n", a)
+    utils.printf("The origin is at: (%f, %f).\n", origin.x, origin.y)
 }

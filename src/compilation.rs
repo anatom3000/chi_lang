@@ -13,8 +13,6 @@ pub fn compile(target_dir: PathBuf) -> Result<(), CompilationError> {
 
     let makefile_path = target_dir.join("Makefile");
 
-    dbg!(&makefile_path);
-
     assert!(makefile_path.exists());
 
     let output = Command::new("sh")
