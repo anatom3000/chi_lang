@@ -255,6 +255,7 @@ impl Expression {
 
 #[derive(Clone, Debug)]
 pub(crate) struct FunctionHead {
+    pub(crate) path: Vec<String>,
     pub(crate) return_type: Type,
     pub(crate) arguments: Vec<(String, Type)>,
     pub(crate) is_variadic: Option<bool>,
@@ -271,6 +272,7 @@ pub enum TypeKind {
 
 #[derive(Clone, Debug)]
 pub struct TypeDefinition {
+    pub(crate) path: Vec<String>,
     pub(crate) kind: TypeKind,
     supported_binary_operations: HashMap<BinaryOperator, HashMap<Type, Type>>,
     supported_unary_operations: HashMap<UnaryOperator, Type>
@@ -526,11 +528,12 @@ impl FunctionScope {
                 match (&left.type_, &right.type_) {
                     (Type::Path(ltype), Type::Path(rtype)) => {
                         let ltypedef = module.get_type(ltype)?;
+                        let rtypedef = module.get_type(rtype)?;
                         
-                        Ok(match ltypedef.apply_binary(operator, Type::Path(rtype.clone())) {
+                        Ok(match ltypedef.apply_binary(operator, Type::Path(rtypedef.path.clone())) {
                             Some(type_) => Expression { data: ExpressionData::Binary { left: Box::new(left), operator, right: Box::new(right) }, type_: type_.clone() },
                             None => {
-                                let rtypedef = module.get_type(rtype)?;
+                                
         
                                 match rtypedef.apply_binary(operator, left.type_.clone()) {
                                     Some(type_) => Expression { data: ExpressionData::Binary { left: Box::new(left), operator, right: Box::new(right) }, type_: type_.clone() },
@@ -645,7 +648,7 @@ impl FunctionScope {
 
                 Ok(Expression {
                     data: ExpressionData::FunctionCall {
-                        function: function_name,
+                        function: function.path,
                         arguments: typed_args,
                     },
                     type_: function.return_type,
@@ -673,7 +676,8 @@ impl FunctionScope {
                 }
             },
             ast::Expression::StructInit { path, mut members } => {
-                match module.get_type(&path)?.kind.clone() {
+                let ty = module.get_type(&path)?;
+                match ty.kind.clone() {
                     TypeKind::Struct { members: decl_members } => {
                         let mut typed_members = HashMap::new();
 
@@ -699,8 +703,8 @@ impl FunctionScope {
                         }
 
                         Ok(Expression { 
-                            data: ExpressionData::StructInit { path: path.clone(), members: typed_members }, 
-                            type_: Type::Path(path)
+                            data: ExpressionData::StructInit { path: ty.path.clone(), members: typed_members }, 
+                            type_: Type::Path(ty.path)
                         })
                     },
                     _ => Err(AnalysisError::NonStructInit { found: Type::Path(path) })
@@ -716,7 +720,6 @@ pub(crate) enum Resource {
     Function(FunctionHead),
     Type(TypeDefinition),
     Variable(Type),
-    #[allow(dead_code)]
     Module(ModuleScope)
 }
 
@@ -773,7 +776,14 @@ impl ModuleScope {
                         }
                     }
 
+                    let mut path = vec![name.clone()];
+                    
+                    if !(name == "main" && self.is_main) {
+                        path = self.make_path_absolute(path);
+                    }
+
                     let head = FunctionHead {
+                        path,
                         return_type,
                         arguments,
                         is_variadic: None,
@@ -804,6 +814,7 @@ impl ModuleScope {
                                 let return_type = self.analyse_new_type(return_type);
 
                                 let func = FunctionHead {
+                                    path: self.make_path_absolute(vec![name.clone()]),
                                     return_type,
                                     arguments,
                                     is_variadic: Some(is_variadic),
@@ -841,7 +852,8 @@ impl ModuleScope {
                         typed_members.insert(m_name, self.analyse_type(m_type)?);
                     }
 
-                    self.resources.insert(name.clone(), Resource::Type(TypeDefinition { 
+                    self.resources.insert(name.clone(), Resource::Type(TypeDefinition {
+                        path: self.make_path_absolute(vec![name.clone()]),
                         kind: TypeKind::Struct { 
                             members: typed_members
                         }, 
@@ -913,7 +925,12 @@ impl ModuleScope {
         }
         let mut module = self;
         
-        for (index, name) in path.iter().enumerate() {
+        let common_path = self.path.iter()
+            .zip(path.iter())
+            .map_while(|(namespace_item, path_item)| (namespace_item == path_item).then_some(()))
+            .count();
+
+        for (index, name) in path.iter().enumerate().skip(common_path) {
             if index+1 == path.len() {
                 return module.resources.get(name).cloned()
                     .ok_or_else(|| AnalysisError::UnknownResource(path.clone()));
@@ -1091,7 +1108,7 @@ impl ModuleScope {
 
 
     fn type_expression(&self, expression: ast::Expression) -> Result<Expression, AnalysisError> {
-        FunctionScope::new(vec![], FunctionHead { return_type: Type::Void, arguments: vec![], is_variadic: None }).type_expression(self, expression)
+        FunctionScope::new(vec![], FunctionHead { return_type: Type::Void, arguments: vec![], path: vec![], is_variadic: None }).type_expression(self, expression)
     }
 
     fn analyse_new_type(&self, ty: ast::Type) -> Type {

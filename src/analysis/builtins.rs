@@ -12,7 +12,12 @@ macro_rules! num_type {
             (type_!($self), type_!(bool)),
             $( (type_!($smaller), type_!(bool)), )*
         ]);
-        (vec![stringify!($self).to_string()], Resource::Type(TypeDefinition {
+        
+        let path = vec![stringify!($self).to_string()];
+
+
+        (path.clone(), Resource::Type(TypeDefinition {
+            path,
             kind: TypeKind::Primitive,
             supported_binary_operations: HashMap::from([
                 (BinaryOperator::Plus, results.clone()),
@@ -40,7 +45,12 @@ macro_rules! num_type {
         let cmp_results = HashMap::from([
             (type_!($self), type_!(bool)),
         ]);
-        (vec![stringify!($self).to_string()], Resource::Type(TypeDefinition {
+
+        let path = vec![stringify!($self).to_string()];
+
+
+        (path.clone(), Resource::Type(TypeDefinition {
+            path,
             kind: TypeKind::Primitive,
             supported_binary_operations: HashMap::from([
                 (BinaryOperator::Plus, results.clone()),
@@ -91,11 +101,13 @@ lazy_static! {
 
         
         (vec!["bool".to_string()], Resource::Type(TypeDefinition {
+            path: vec!["bool".to_string()],
             kind: TypeKind::Primitive,
             supported_binary_operations: HashMap::from([(BinaryOperator::Equal, HashMap::from([(type_!(bool), type_!(bool))]))]),
             supported_unary_operations: HashMap::from([(UnaryOperator::Not, type_!(bool))])
         })),
         (vec!["char".to_string()], Resource::Type(TypeDefinition {
+            path: vec!["bool".to_string()],
             kind: TypeKind::Primitive,
             supported_binary_operations: HashMap::new(),
             supported_unary_operations: HashMap::new()

@@ -11,9 +11,7 @@ pub(crate) struct ModuleTranspiler {
     source: Vec<String>,
     header: Vec<String>,
     indent: usize,
-    namespace: Vec<String>,
     scope: ModuleScope,
-    is_main: bool
 }
 
 impl ModuleTranspiler {
@@ -49,9 +47,7 @@ impl ModuleTranspiler {
             source: vec![],
             header: vec![],
             indent: 0,
-            namespace: path.clone(),
             scope,
-            is_main
         };
 
         // TODO: lazily add includes (e.g. include stddef.h only when NULL is used)
@@ -161,8 +157,7 @@ impl ModuleTranspiler {
                 }
 
                 // don't "namespacify" the function name if function is the main function or an extern function
-                let func_name = if self.is_main && name == "main" { name } 
-                                        else { self.transpile_path(&self.to_absolute_path(vec![name])) };
+                let func_name = self.transpile_path(&func.head.path);
                 let declaration = self.transpile_declaration(func.head.return_type, format!("{func_name}({args})"));
                 self.add_header_line(format!("{declaration};"));
                 self.add_line(format!("{declaration} {{"));
@@ -178,11 +173,12 @@ impl ModuleTranspiler {
                 self.add_new_line();
             },
             StructDeclaration { name } => {
+                let struct_type = self.scope.get_type(&vec![name.clone()]).expect("declared struct exists");
 
-                let TypeKind::Struct {members} = self.scope.get_type(&vec![name.clone()]).expect("declared struct exists").kind.clone()
+                let TypeKind::Struct {members} = struct_type.kind.clone()
                     else { unreachable!("defined struct should have struct type ") };
 
-                let struct_name = self.transpile_path(&(vec![name]));
+                let struct_name = self.transpile_path(&struct_type.path);
                 self.add_header_line(format!("typedef struct {struct_name} {{"));
                 self.indent += 1;
                 for (m_name, m_type) in members {
@@ -272,7 +268,7 @@ impl ModuleTranspiler {
             } => {
                 let head = self.scope.get_function_head(&function).expect("called function exists");
                 let function = if head.is_variadic.is_some() { function.last().expect("path is not empty").clone() } 
-                                   else {self.transpile_path(&self.to_absolute_path(function))};
+                                   else { self.transpile_path(&head.path) };
                 let args = arguments
                     .into_iter()
                     .map(|e| self.transpile_expression(e.data))
@@ -333,12 +329,6 @@ impl ModuleTranspiler {
     fn transpile_path(&self, path: &Vec<String>) -> String {
         // TODO: check for conflicting function names
         path.join("_")
-    }
-
-    fn to_absolute_path(&self, mut path: Vec<String>) -> Vec<String> {
-        let mut ns = self.namespace.clone();
-        ns.append(&mut path);
-        ns
     }
 
     fn transpile_type(&self, path: Vec<String>) -> String {

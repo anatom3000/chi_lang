@@ -20,6 +20,11 @@ def main() {
 
     let diff = math.point.add(origin, p)
 
+    // relative path
+    do_nothing()
+    // absolute path
+    modules.do_nothing()
+
     utils.printf("Math: 2+3+4=%i\n", a)
     utils.printf("The p is at: (%f, %f).\n", diff.x, diff.y)
 }
