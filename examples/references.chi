@@ -12,5 +12,5 @@ def main() {
 
     increment(&a)
 
-    printf("%i", a)
+    printf("%i\n", a)
 }

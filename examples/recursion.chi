@@ -10,5 +10,5 @@ def fib(n: int) -> int {
 }
 
 def main() {
-    printf("fib(9) = %i", fib(9))
+    printf("fib(9) = %i\n", fib(9))
 }

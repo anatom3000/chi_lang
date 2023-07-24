@@ -14,5 +14,5 @@ extern "<stdio.h>" {
 // }
 
 def main() {
-    printf("WOW LOOK AT MY INT --> %i <--", 42)
+    printf("WOW LOOK AT MY INT --> %i <--\n", 42)
 }
