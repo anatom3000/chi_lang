@@ -857,12 +857,12 @@ impl ModuleScope {
                         return Err(AnalysisError::NonExternVariadic { name });
                     }
 
-                    let arguments: Vec<(String, Type)> = arguments
-                        .into_iter()
-                        .map(|(name, ty)| (name, self.analyse_new_type(ty)))
-                        .collect();
+                    let mut typed_arguments = vec![];
+                    for (name, ty) in arguments {
+                        typed_arguments.push((name, self.analyse_type(ty)?))
+                    }
 
-                    let mut return_type = self.analyse_new_type(return_type);
+                    let mut return_type = self.analyse_type(return_type)?;
 
                     if name == "main" {
                         // implicitly return int if function is main
@@ -885,7 +885,7 @@ impl ModuleScope {
                     let head = FunctionHead {
                         path,
                         return_type,
-                        arguments,
+                        arguments: typed_arguments,
                         is_variadic: None,
                     };
 
