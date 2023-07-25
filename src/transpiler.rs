@@ -12,6 +12,7 @@ pub(crate) struct ModuleTranspiler {
     header: Vec<String>,
     indent: usize,
     scope: ModuleScope,
+    function_variables: HashMap<String, usize>
 }
 
 impl ModuleTranspiler {
@@ -51,6 +52,7 @@ impl ModuleTranspiler {
             header: vec![],
             indent: 0,
             scope,
+            function_variables: HashMap::new()
         };
 
         // TODO: lazily add includes (e.g. include stddef.h only when NULL is used)
@@ -141,6 +143,7 @@ impl ModuleTranspiler {
             }
             LetAssignment { name, value } => {
                 let expr = self.transpile_expression(value.data);
+                let name = self.transpile_new_variable(name);
                 let declaration = self.transpile_declaration(value.type_, name);
 
                 self.add_line(format!("{} = {};", declaration, expr));
@@ -164,7 +167,10 @@ impl ModuleTranspiler {
                     .head
                     .arguments
                     .into_iter()
-                    .map(|(name, type_)| self.transpile_declaration(type_, name))
+                    .map(|(name, type_)| {
+                        self.function_variables.insert(name.clone(), 0);
+                        self.transpile_declaration(type_, name)
+                    })
                     .collect::<Vec<String>>()
                     .join(", ");
 
@@ -183,6 +189,7 @@ impl ModuleTranspiler {
                 for stmt in func.statements {
                     self.transpile_statement(stmt)
                 }
+                self.function_variables.clear();
 
                 self.indent -= 1;
                 //self.source.pop();
@@ -317,7 +324,14 @@ impl ModuleTranspiler {
             ExpressionData::Unary { operator, argument } => {
                 format!("{operator}{}", self.transpile_expression(argument.data))
             }
-            ExpressionData::Variable(path) => self.transpile_path(&path),
+            ExpressionData::Variable(path) => {
+                if path.len() == 1 {
+                    self.transpile_variable(path.into_iter().next().expect("path length is 1"))
+                } else {
+                    self.transpile_path(&path)
+                }
+                
+            },
             ExpressionData::StructMember { instance, member } => {
                 format!("{}.{}", self.transpile_expression(instance.data), member)
             }
@@ -355,6 +369,20 @@ impl ModuleTranspiler {
             // },
             // Type::Function { .. } => todo!("function pointer transpile") // for my own sanity
         }
+    }
+
+    fn transpile_variable(&self, name: String) -> String {
+        let n = self.function_variables.get(&name).expect("used variables should be declared").clone();
+        format!("{name}{}", "_".repeat(n))
+    }
+
+    fn transpile_new_variable(&mut self, name: String) -> String {
+        let n = match self.function_variables.get(&name).cloned() {
+            Some(n) => n+1,
+            None => 0
+        };
+        self.function_variables.insert(name.clone(), n);
+        self.transpile_variable(name)
     }
 
     fn transpile_path(&self, path: &Vec<String>) -> String {

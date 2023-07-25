@@ -1,0 +1,41 @@
+extern "<stdio.h>" {
+    def printf(fmt_str: &char, ...)
+}
+
+struct Point {
+    x: int,
+    y: int,
+}
+
+// struct shadowing is not allowed
+// struct Point {
+//     x: float,
+//     y: float,
+// }
+
+def do_stuff() {
+    // ...
+}
+
+// function overloading is not supported (yet)
+// def do_stuff(x: int) -> int {
+//     // ...
+// }
+
+def myfunc() {
+    let a = "hello"
+
+    let a = 0.5
+}
+
+def main() {
+    let a = 1
+    printf("a = %i\n", a)
+
+    // variable shadowing is allowed
+    let a = 420.42
+    printf("a = %f\n", a)
+
+    let a = "*something deep about programming languages*\n"
+    printf(a)
+}

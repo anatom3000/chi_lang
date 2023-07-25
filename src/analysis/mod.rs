@@ -821,6 +821,7 @@ impl FunctionScope {
 pub(crate) enum Resource {
     Function(FunctionHead),
     Type(TypeDefinition),
+    #[allow(unused)]
     Variable(Type),
     Module(ModuleScope),
 }
@@ -946,14 +947,6 @@ impl ModuleScope {
 
                     self.externs.push(source)
                 }
-                ast::Statement::LetAssignment { name, value } => {
-                    let rhs = self.type_expression(value)?;
-
-                    self.resources
-                        .insert(name.clone(), Resource::Variable(rhs.type_.clone()));
-                    self.statements
-                        .push(Statement::LetAssignment { name, value: rhs });
-                }
                 ast::Statement::StructDeclaration { name, members } => {
                     let mut typed_members = HashMap::new();
                     for (m_name, m_type) in members {
@@ -997,6 +990,7 @@ impl ModuleScope {
                 | ast::Statement::While { .. }
                 | ast::Statement::Return { .. }
                 | ast::Statement::ExternFunctionDeclaration { .. }
+                | ast::Statement::LetAssignment { .. }
                 | ast::Statement::Assignment { .. }) => {
                     return Err(AnalysisError::StatementInWrongContext {
                         statement: other,
@@ -1278,19 +1272,6 @@ impl ModuleScope {
             declared_functions: HashMap::new(),
             externs: vec![],
         })
-    }
-
-    fn type_expression(&self, expression: ast::Expression) -> Result<Expression, AnalysisError> {
-        FunctionScope::new(
-            vec![],
-            FunctionHead {
-                return_type: Type::Void,
-                arguments: vec![],
-                path: vec![],
-                is_variadic: None,
-            },
-        )
-        .type_expression(self, expression)
     }
 
     fn analyse_new_type(&self, ty: ast::Type) -> Type {
