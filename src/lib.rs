@@ -86,7 +86,7 @@ mod tests {
         ($name:ident: $path:expr) => {
             #[test]
             fn $name() {
-                let result =
+                let result =                       // tests are multithreaded so we need a seperate `generated/` folder for each test
                     compile_and_test($path, &format!("generated_tests/{}", stringify!($name)))
                         .unwrap();
                 assert_eq!(result, 0);
@@ -101,6 +101,7 @@ mod tests {
     test_program!(test_newlines: "examples/newlines.chi");
     test_program!(test_recursion: "examples/recursion.chi");
     test_program!(test_references: "examples/references.chi");
+    test_program!(test_shadowing: "examples/shadowing.chi");
     test_program!(test_structs: "examples/structs.chi");
     test_program!(test_modules: "examples/modules/modules.chi");
 }
