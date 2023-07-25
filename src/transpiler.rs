@@ -1,40 +1,41 @@
-use std::{collections::HashMap, mem, path::PathBuf};
+use std::{collections::HashMap, path::PathBuf};
 
 use crate::{
     analysis::{ExpressionData, ModuleScope, Resource, Statement, Type, TypeKind},
     ast::Literal,
 };
 
-pub(crate) struct ModuleTranspiler {
+pub(crate) struct ModuleTranspiler<'a> {
     pub(crate) source_path: PathBuf,
     pub(crate) header_path: PathBuf,
     source: Vec<String>,
     header: Vec<String>,
     indent: usize,
-    scope: ModuleScope,
+    scope: &'a ModuleScope,
     function_variables: HashMap<String, usize>
 }
 
-impl ModuleTranspiler {
+impl<'a> ModuleTranspiler<'a> {
     pub fn transpile(
-        path: Vec<String>,
-        scope: ModuleScope,
-        transpiled_modules: &mut HashMap<Vec<String>, ModuleTranspiler>,
+        scope: &'a ModuleScope,
+        transpiled_modules: &mut HashMap<Vec<String>, ModuleTranspiler<'a>>,
         is_main: bool,
     ) {
-        if transpiled_modules.contains_key(&path) {
-            for (_, res) in scope.resources {
-                if let Resource::Module(m) = res {
-                    ModuleTranspiler::transpile(m.path.clone(), m, transpiled_modules, false)
-                }
+
+        for (_, res) in scope.resources.iter() {
+            if let Resource::Module(m) = res {
+                ModuleTranspiler::transpile(m, transpiled_modules, false)
             }
+        }
+
+        if transpiled_modules.contains_key(&scope.path) {
             return;
         }
 
         let piter = if is_main {
-            path.iter()
+            scope.path.iter()
         } else {
-            let mut p = path.iter();
+            let mut p = scope.path.iter();
             p.next();
             p
         };
@@ -44,6 +45,8 @@ impl ModuleTranspiler {
 
         source_path.set_extension("c");
         header_path.set_extension("h");
+
+        let path = scope.path.clone();
 
         let mut new = ModuleTranspiler {
             source_path,
@@ -61,13 +64,13 @@ impl ModuleTranspiler {
             "<stdbool.h>".to_string(),
             "<stdint.h>".to_string(),
         ];
-        for ext in mem::take(&mut new.scope.externs) {
+        for ext in &new.scope.externs {
             if ext.starts_with('<') && ext.ends_with('>') {
-                if includes.contains(&ext) {
+                if includes.contains(ext) {
                     continue;
                 }
 
-                includes.push(ext);
+                includes.push(ext.clone());
             } else {
                 let ext = format!("\"{}\"", ext);
                 if includes.contains(&ext) {
@@ -98,22 +101,15 @@ impl ModuleTranspiler {
 
         new.add_new_line();
 
-        for stmt in mem::take(&mut new.scope.statements) {
+        for stmt in &new.scope.statements {
             new.transpile_statement(stmt.clone());
         }
 
         new.add_new_header_line();
         new.add_header_line("#endif".to_string());
 
-        let resources = mem::take(&mut new.scope.resources);
-
         transpiled_modules.insert(path, new);
 
-        for (_, res) in resources {
-            if let Resource::Module(m) = res {
-                ModuleTranspiler::transpile(m.path.clone(), m, transpiled_modules, false)
-            }
-        }
     }
 
     fn add_line(&mut self, line: String) {
@@ -126,8 +122,7 @@ impl ModuleTranspiler {
     }
 
     fn add_header_line(&mut self, line: String) {
-        self.header
-            .push(format!("{}{line}", "    ".repeat(self.indent)))
+        self.header.push(format!("{}{line}", "    ".repeat(self.indent)))
     }
 
     fn add_new_header_line(&mut self) {
@@ -423,7 +418,7 @@ impl ModuleTranspiler {
     }
 }
 
-impl ModuleTranspiler {
+impl<'a> ModuleTranspiler<'a> {
     pub fn source(&self) -> String {
         self.source.join("\n").trim().to_string()
     }

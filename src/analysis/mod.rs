@@ -1,6 +1,8 @@
+use std::cell::UnsafeCell;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fmt::Display;
+use std::hash::Hash;
 use std::path::PathBuf;
 use std::{fs, mem, vec};
 
@@ -9,8 +11,43 @@ use crate::parser::ParserError;
 use crate::transpiler::{generate_makefile, ModuleTranspiler};
 use crate::{lexer, parser, TranspileError};
 
+
 #[macro_use]
 pub mod builtins;
+
+
+// I know this is really bad but I don't care
+pub(crate) struct GlobalPackage(pub(crate) UnsafeCell<HashMap<String, ModuleScope>>);
+
+impl GlobalPackage {
+    fn new() -> Self {
+        GlobalPackage(UnsafeCell::new(HashMap::new()))
+    }
+
+    pub fn get(&self, k: &String) -> Option<&ModuleScope> {
+        unsafe { &*self.0.get() }.get(k)
+    }
+
+    pub fn get_mut(&self, k: &String) -> Option<&mut ModuleScope> {
+        unsafe { &mut *self.0.get() }.get_mut(k)
+    }
+
+    pub fn insert(&self, k: String, v: ModuleScope) {
+        unsafe { &mut *self.0.get() }.insert(k, v);
+    }
+}
+
+// peak Rust moment
+unsafe impl Sync for GlobalPackage {}
+
+// look, I tried everything but this is the simplest solution
+// I am NOT using RwLock<HashMap<String, Arc<RwLock<ModuleScope>>>>
+thread_local! {
+    pub(crate) static PACKAGES: GlobalPackage = GlobalPackage::new();
+}
+
+
+
 
 #[derive(Debug, Clone)]
 pub enum AnalysisError {
@@ -370,7 +407,7 @@ impl FunctionScope {
                 },
                 &path[1..],
             )?)),
-            None => module.get_variable(path),
+            None => Err(AnalysisError::UnknownVariable(path.clone())),
         }
     }
 
@@ -1033,82 +1070,50 @@ impl ModuleScope {
         Ok(())
     }
 
-    pub(crate) fn get_resource(&self, path: &Vec<String>) -> Result<Resource, AnalysisError> {
-        if path.len() == 1 {
-            if let Some(res) = builtins::TYPES.get(path) {
-                return Ok(res.clone());
-            }
-        }
+    pub(crate) fn get_resource_no_global(&self, path: &[String]) -> Result<Resource, ()> {
+
         let mut module = self;
 
-        let common_path = self
-            .path
-            .iter()
-            .zip(path.iter())
-            .map_while(|(namespace_item, path_item)| (namespace_item == path_item).then_some(()))
-            .count();
-
-        for (index, name) in path.iter().enumerate().skip(common_path) {
+        for (index, name) in path.iter().enumerate() {
             if index + 1 == path.len() {
                 return module
                     .resources
                     .get(name)
                     .cloned()
-                    .ok_or_else(|| AnalysisError::UnknownResource(path.clone()));
+                    .ok_or(());
             }
             match module
                 .resources
                 .get(name)
-                .ok_or_else(|| AnalysisError::UnknownResource(path.clone()))?
+                .ok_or(())?
             {
                 Resource::Module(m) => module = m,
-                _ => return Err(AnalysisError::UnknownResource(path.clone())),
+                _ => return Err(()),
             }
         }
 
-        Err(AnalysisError::UnknownResource(path.clone()))
+        Err(())
     }
 
-    pub(crate) fn get_variable(
-        &self,
-        path: &Vec<String>,
-    ) -> Result<VariableOrAttribute, AnalysisError> {
-        if let Some(Resource::Variable(var_type)) = builtins::TYPES.get(&path[..0]) {
-            return Ok(VariableOrAttribute::Attribute(self.get_struct_member(
-                Expression {
-                    data: ExpressionData::Variable(Vec::from(&path[..0])),
-                    type_: var_type.clone(),
-                },
-                &path[1..],
-            )?));
-        }
+    pub(crate) fn get_resource(&self, path: &[String]) -> Result<Resource, AnalysisError> {
 
-        let mut module = self;
-
-        for (index, name) in path.iter().enumerate() {
-            match module
-                .resources
-                .get(name)
-                .ok_or_else(|| AnalysisError::UnknownResource(path.clone()))?
-            {
-                Resource::Module(m) => module = m,
-                Resource::Variable(var_type) if index + 1 == path.len() => {
-                    return Ok(VariableOrAttribute::Variable(var_type.clone()))
-                }
-                Resource::Variable(var_type) => {
-                    return Ok(VariableOrAttribute::Attribute(module.get_struct_member(
-                        Expression {
-                            data: ExpressionData::Variable(Vec::from(&path[..=index])),
-                            type_: var_type.clone(),
-                        },
-                        &path[1..],
-                    )?))
-                }
-                _ => return Err(AnalysisError::UnknownResource(path.clone())),
+        if path.len() == 1 {
+            if let Some(res) = builtins::TYPES.get(path) {
+                return Ok(res.clone());
             }
         }
 
-        Err(AnalysisError::UnknownVariable(path.clone()))
+        let local = self.get_resource_no_global(path);
+
+        if let Ok(res) = local {
+            return Ok(res);
+        }
+
+        if let Some(res) = PACKAGES.with(|p| p.get(&path[0]).map(|m|m.get_resource_no_global(&path[1..]))) {
+            return res.map_err(|_| AnalysisError::UnknownResource(Vec::from(path.clone())));
+        }
+
+        return Err(AnalysisError::UnknownResource(Vec::from(path.clone())));
     }
 
     pub(crate) fn get_struct_member(
@@ -1176,7 +1181,7 @@ impl ModuleScope {
         }
     }
 
-    pub fn main(root: PathBuf) -> Result<Self, TranspileError> {
+    pub fn main(root: PathBuf) -> Result<String, TranspileError> {
         let mut root = root
             .canonicalize()
             .map_err(|e| TranspileError::FileError(e))?;
@@ -1197,8 +1202,8 @@ impl ModuleScope {
             .parse()
             .map_err(|e| TranspileError::ParserError(e))?;
 
-        Ok(ModuleScope {
-            path: vec![package],
+        let new = ModuleScope {
+            path: vec![package.clone()],
             is_main: true,
             file,
             source,
@@ -1206,7 +1211,11 @@ impl ModuleScope {
             resources: HashMap::new(),
             declared_functions: HashMap::new(),
             externs: vec![],
-        })
+        };
+
+        PACKAGES.with(|p| p.insert(package.clone(), new));
+        
+        Ok(package)
     }
 
     pub(crate) fn child(&self, end: String) -> Result<Self, AnalysisError> {
@@ -1385,13 +1394,13 @@ impl ModuleScope {
         })
     }
 
-    pub fn transpile(self, target_dir: PathBuf) -> Result<(), TranspileError> {
+    pub fn transpile(&mut self, target_dir: PathBuf) -> Result<(), TranspileError> {
         let mut transpiled_modules = HashMap::new();
         let module_name = self.path[0].clone();
 
         let is_main = self.is_main;
 
-        ModuleTranspiler::transpile(self.path.clone(), self, &mut transpiled_modules, is_main);
+        ModuleTranspiler::transpile(self, &mut transpiled_modules, is_main);
 
         let mut files = vec![];
         for m in transpiled_modules.into_values() {

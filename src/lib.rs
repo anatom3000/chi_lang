@@ -2,7 +2,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use analysis::{AnalysisError, ModuleScope};
+use analysis::{AnalysisError, ModuleScope, PACKAGES};
 use compilation::CompilationError;
 use parser::ParserError;
 
@@ -26,15 +26,11 @@ pub enum TranspileError {
 fn transpile(main_file: &str, target_dir: &str) -> Result<String, TranspileError> {
     let main_path = Path::new(main_file).to_path_buf();
 
-    let mut main_module = ModuleScope::main(main_path)?;
+    let module_name = ModuleScope::main(main_path)?;
 
-    main_module
-        .analyse()
-        .map_err(|e| TranspileError::AnalysisError(e))?;
+    PACKAGES.with(|p| p.get_mut(&module_name).expect("ModuleScope::main adds module to PACKAGES").analyse()).map_err(|e| TranspileError::AnalysisError(e))?;
 
-    let module_name = main_module.path[0].clone();
-
-    main_module.transpile(target_dir.into())?;
+    PACKAGES.with(|p| p.get_mut(&module_name).expect("ModuleScope::main adds module to PACKAGES").transpile(target_dir.into()))?;
 
     Ok(module_name)
 }
