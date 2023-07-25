@@ -1,4 +1,6 @@
-use super::{BinaryOperator, Resource, Type, TypeDefinition, TypeKind, UnaryOperator};
+use crate::analysis::ResourceKind;
+
+use super::{BinaryOperator, Type, TypeDefinition, TypeKind, UnaryOperator};
 use lazy_static::lazy_static;
 use std::collections::HashMap;
 
@@ -16,7 +18,7 @@ macro_rules! num_type {
         let path = vec![stringify!($self).to_string()];
 
 
-        (path.clone(), Resource::Type(TypeDefinition {
+        (path.clone(), ResourceKind::Type(TypeDefinition {
             path,
             kind: TypeKind::Primitive,
             supported_binary_operations: HashMap::from([
@@ -49,7 +51,7 @@ macro_rules! num_type {
         let path = vec![stringify!($self).to_string()];
 
 
-        (path.clone(), Resource::Type(TypeDefinition {
+        (path.clone(), ResourceKind::Type(TypeDefinition {
             path,
             kind: TypeKind::Primitive,
             supported_binary_operations: HashMap::from([
@@ -85,7 +87,7 @@ macro_rules! type_ {
 }
 
 lazy_static! {
-    pub(super) static ref TYPES: HashMap<Vec<String>, Resource> = HashMap::from([
+    pub(super) static ref TYPES: HashMap<Vec<String>, ResourceKind> = HashMap::from([
         num_type!(int; uint),
         num_type!(unsigned uint),
         num_type!(int8;  uint8),
@@ -98,7 +100,7 @@ lazy_static! {
         num_type!(unsigned uint64),
         (
             vec!["bool".to_string()],
-            Resource::Type(TypeDefinition {
+            ResourceKind::Type(TypeDefinition {
                 path: vec!["bool".to_string()],
                 kind: TypeKind::Primitive,
                 supported_binary_operations: HashMap::from([(
@@ -110,7 +112,7 @@ lazy_static! {
         ),
         (
             vec!["char".to_string()],
-            Resource::Type(TypeDefinition {
+            ResourceKind::Type(TypeDefinition {
                 path: vec!["bool".to_string()],
                 kind: TypeKind::Primitive,
                 supported_binary_operations: HashMap::new(),

@@ -26,5 +26,5 @@ def main() {
     modules.do_nothing()
 
     utils.printf("Math: 2+3+4=%i\n", a)
-    utils.printf("The p is at: (%f, %f).\n", diff.x, diff.y)
+    utils.printf("P is at: (%f, %f).\n", diff.x, diff.y)
 }

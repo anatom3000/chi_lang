@@ -1,7 +1,7 @@
 use std::{collections::HashMap, path::PathBuf};
 
 use crate::{
-    analysis::{ExpressionData, ModuleScope, Resource, Statement, Type, TypeKind},
+    analysis::{ExpressionData, ModuleScope, ResourceKind, Statement, Type, TypeKind, Resource},
     ast::Literal,
 };
 
@@ -23,7 +23,7 @@ impl<'a> ModuleTranspiler<'a> {
     ) {
 
         for (_, res) in scope.resources.iter() {
-            if let Resource::Module(m) = res {
+            if let Resource {kind: ResourceKind::Module(m), ..} = res {
                 ModuleTranspiler::transpile(m, transpiled_modules, false)
             }
         }

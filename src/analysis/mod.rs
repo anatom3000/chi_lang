@@ -855,12 +855,37 @@ impl FunctionScope {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum Resource {
+pub(crate) enum ResourceKind {
     Function(FunctionHead),
     Type(TypeDefinition),
-    #[allow(unused)]
-    Variable(Type),
+    #[allow(dead_code)] Variable(Type),
     Module(ModuleScope),
+    Alias(Vec<String>)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Visibility {
+    Public,
+    Module,
+}
+
+impl Default for Visibility {
+    fn default() -> Self {
+        // TODO: make resources private by default
+        Visibility::Public
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct Resource {
+    pub kind: ResourceKind,
+    pub visibility: Visibility
+}
+
+impl From<ResourceKind> for Resource {
+    fn from(kind: ResourceKind) -> Self {
+        Resource { kind, visibility: Default::default() }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -938,7 +963,7 @@ impl ModuleScope {
                     let func = FunctionScope::new(body, head.clone());
 
                     self.resources
-                        .insert(name.clone(), Resource::Function(head));
+                        .insert(name.clone(), ResourceKind::Function(head).into());
                     self.declared_functions.insert(name.clone(), func);
 
                     self.statements
@@ -974,7 +999,7 @@ impl ModuleScope {
                                     is_variadic: Some(is_variadic),
                                 };
 
-                                self.resources.insert(name, Resource::Function(func));
+                                self.resources.insert(name, ResourceKind::Function(func).into());
                             }
                             _ => unreachable!(
                                 "extern blocks should only contain body-less function declarations"
@@ -1005,7 +1030,7 @@ impl ModuleScope {
 
                     self.resources.insert(
                         name.clone(),
-                        Resource::Type(TypeDefinition {
+                        ResourceKind::Type(TypeDefinition {
                             path,
                             kind: TypeKind::Struct {
                                 members: typed_members,
@@ -1014,7 +1039,7 @@ impl ModuleScope {
                             // (or at least provide a default internal implementation for `==`)
                             supported_binary_operations: HashMap::new(),
                             supported_unary_operations: HashMap::new(),
-                        }),
+                        }).into()
                     );
                     self.statements.push(Statement::StructDeclaration { name })
                 }
@@ -1047,7 +1072,7 @@ impl ModuleScope {
         self.statements
             .push(Statement::Import(submodule.path.clone()));
 
-        self.resources.insert(end, Resource::Module(submodule));
+        self.resources.insert(end, ResourceKind::Module(submodule).into());
 
         Ok(())
     }
@@ -1062,7 +1087,7 @@ impl ModuleScope {
         self.declared_functions = declared_functions;
 
         for res in self.resources.values_mut() {
-            if let Resource::Module(m) = res {
+            if let Resource { kind: ResourceKind::Module(m), ..} = res {
                 m.execution_pass()?;
             }
         }
@@ -1070,32 +1095,33 @@ impl ModuleScope {
         Ok(())
     }
 
-    pub(crate) fn get_resource_no_global(&self, path: &[String]) -> Result<Resource, ()> {
+    fn get_resource_no_global(&self, path: &[String], mut visibility: Visibility) -> Result<ResourceKind, ()> {
 
         let mut module = self;
 
         for (index, name) in path.iter().enumerate() {
             if index + 1 == path.len() {
-                return module
-                    .resources
-                    .get(name)
-                    .cloned()
-                    .ok_or(());
+                return match module.resources.get(name).cloned() {
+                    Some(Resource { kind, visibility: vis }) if vis <= visibility => Ok(kind),
+                    _ => Err(())
+                }
             }
-            match module
-                .resources
-                .get(name)
-                .ok_or(())?
-            {
-                Resource::Module(m) => module = m,
+            match module.resources.get(name) {
+                Some(Resource {kind: ResourceKind::Module(m), visibility: vis}) if vis <= &visibility => module = m,
                 _ => return Err(()),
+            }
+
+            visibility = match visibility {
+                Visibility::Public => Visibility::Public,
+                // parent modules cannot access the private resources of their child module
+                Visibility::Module => Visibility::Public
             }
         }
 
         Err(())
     }
 
-    pub(crate) fn get_resource(&self, path: &[String]) -> Result<Resource, AnalysisError> {
+    pub(crate) fn get_resource(&self, path: &[String]) -> Result<ResourceKind, AnalysisError> {
 
         if path.len() == 1 {
             if let Some(res) = builtins::TYPES.get(path) {
@@ -1103,13 +1129,13 @@ impl ModuleScope {
             }
         }
 
-        let local = self.get_resource_no_global(path);
+        let local = self.get_resource_no_global(path, Visibility::Module);
 
         if let Ok(res) = local {
             return Ok(res);
         }
 
-        if let Some(res) = PACKAGES.with(|p| p.get(&path[0]).map(|m|m.get_resource_no_global(&path[1..]))) {
+        if let Some(res) = PACKAGES.with(|p| p.get(&path[0]).map(|m|m.get_resource_no_global(&path[1..], Visibility::Public))) {
             return res.map_err(|_| AnalysisError::UnknownResource(Vec::from(path.clone())));
         }
 
@@ -1169,14 +1195,14 @@ impl ModuleScope {
         path: &Vec<String>,
     ) -> Result<FunctionHead, AnalysisError> {
         match self.get_resource(path)? {
-            Resource::Function(func) => Ok(func),
+            ResourceKind::Function(func) => Ok(func),
             _ => Err(AnalysisError::UnknownFunction(path.clone())),
         }
     }
 
     pub fn get_type(&self, path: &Vec<String>) -> Result<TypeDefinition, AnalysisError> {
         match self.get_resource(path)? {
-            Resource::Type(ty) => Ok(ty),
+            ResourceKind::Type(ty) => Ok(ty),
             _ => Err(AnalysisError::UnknownType(path.clone())),
         }
     }
