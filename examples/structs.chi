@@ -7,7 +7,6 @@ struct Point {
     y: float,
 }
 
-
 struct Line {
     start: Point,
     end: Point

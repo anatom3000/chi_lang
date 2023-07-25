@@ -90,6 +90,9 @@ pub enum AnalysisError {
         path: Vec<String>,
         file: PathBuf,
     },
+    ResourceShadowing {
+        path: Vec<String>
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -853,6 +856,7 @@ impl ModuleScope {
                     body,
                     is_variadic,
                 } => {
+
                     if is_variadic {
                         return Err(AnalysisError::NonExternVariadic { name });
                     }
@@ -880,6 +884,10 @@ impl ModuleScope {
 
                     if !(name == "main" && self.is_main) {
                         path = self.make_path_absolute(path);
+                    }
+
+                    if self.get_resource(&path).is_ok() {
+                        return Err(AnalysisError::ResourceShadowing { path })
                     }
 
                     let head = FunctionHead {
@@ -914,8 +922,15 @@ impl ModuleScope {
 
                                 let return_type = self.analyse_new_type(return_type);
 
+                                let path = self.make_path_absolute(vec![name.clone()]);
+
+                                if self.get_resource(&path).is_ok() {
+                                    return Err(AnalysisError::ResourceShadowing { path })
+                                }
+
+
                                 let func = FunctionHead {
-                                    path: self.make_path_absolute(vec![name.clone()]),
+                                    path,
                                     return_type,
                                     arguments,
                                     is_variadic: Some(is_variadic),
@@ -948,13 +963,20 @@ impl ModuleScope {
                                 duplicated_member: m_name,
                             });
                         }
+
                         typed_members.insert(m_name, self.analyse_type(m_type)?);
+                    }
+
+                    let path = self.make_path_absolute(vec![name.clone()]);
+
+                    if self.get_resource(&path).is_ok() {
+                        return Err(AnalysisError::ResourceShadowing { path })
                     }
 
                     self.resources.insert(
                         name.clone(),
                         Resource::Type(TypeDefinition {
-                            path: self.make_path_absolute(vec![name.clone()]),
+                            path,
                             kind: TypeKind::Struct {
                                 members: typed_members,
                             },
