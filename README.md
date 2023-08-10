@@ -2,7 +2,7 @@
 
 ### Getting Started
 
-The `examples/` folder shows the various the basic syntax and semantics of the language.
+The `examples/` folder shows the basic syntax and semantics of the language.
 
 Example program (from `examples/recursion.chi`): 
 ```groovy
@@ -28,19 +28,52 @@ cargo run -- examples/recursion.chi
 ```
 
 
-To compile and run a program, simply pass it as the first argument to the program :
+To compile and run a program, simply pass it as the first argument to the compiler :
 ```console
-cargo run -- program.chi
+cargo run -- <program.chi>
 ```
 The generated C code and the compiled executable should be located in the `generated/` folder in the current directory.
 Executable generation is only supported on Linux (and perhaps MacOS, untested), though Chi generates a Makefile with the C code in all cases.
 
-### Test
+### Tests
 `cargo test` compiles and runs every examples in the `examples/` folder and check if any of them failed to compile or run.
 > All examples should compile and return `0`.
 
-### Syntax
-> Note: `?sep` will be used to indicate that the block before can be omitted at the last repetition of a `*` or `+` block
+### Roadmap
+
+#### MVP
+- [ ] Immutable/Mutable References `&x`/`!x`
+- [ ] Auto (de)referencing
+- [ ] Struct methods
+- [ ] Enums
+- [ ] Generics
+- [ ] Nullable Pointers as `Option<!T>` (similar to Rust's null pointer optimization but with C compatibility)
+- [ ] Array support (temporary C semantics)
+
+#### Easy nice-to-haves
+- [ ] Absolute paths
+- [ ] `unsafe` block that does nothing but make Rust programmers confortable
+- [ ] Syntactic sugar: `if *** do stmt`
+- [ ] Operator overloading
+- [ ] Lazily `#include`s (e.g. import `stdbool.h` iff `bool` is used in the file)
+
+
+#### Hard nice-to-haves
+- [ ] Expression decomposition
+    - [ ] Expression-scope blocks
+    - [ ] Guaranteed function argument evaluation order
+    - [ ] Do not rely on C's operator precedence
+    - [ ] Array as values
+- [ ] Traits
+- [ ] A standard library
+- [ ] Better error messages
+- [ ] `extern` struct declarations
+- [ ] Basic, non-intrusive reference lifetime checking
+- [ ] Macros as functions
+    - [ ] Compile-time code execution
+
+### Syntax spec
+> Note: `?sep` indicates that the preceding block can be omitted at the last repetition of a `*` or `+` block.
 ```ebnf
 program = statement_list
 

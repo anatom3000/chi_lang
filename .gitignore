@@ -45,6 +45,4 @@ generated/
 generated_tests/
 *.c
 
-TODO.md
-
 # End of https://www.toptal.com/developers/gitignore/api/rust,rust-analyzer,visualstudiocode
