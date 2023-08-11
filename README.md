@@ -51,7 +51,7 @@ Executable generation is only supported on Linux (and perhaps MacOS, untested), 
 - [ ] Array support (temporary C semantics)
 
 #### Easy nice-to-haves
-- [ ] Absolute paths
+- [x] Absolute paths
 - [ ] `unsafe` block that does nothing but make Rust programmers confortable
 - [ ] Syntactic sugar: `if *** do stmt`
 - [ ] Operator overloading

@@ -1002,7 +1002,6 @@ impl ModuleScope {
                                     return Err(AnalysisError::ResourceShadowing { path })
                                 }
 
-
                                 let func = FunctionHead {
                                     path,
                                     return_type,
@@ -1056,7 +1055,7 @@ impl ModuleScope {
                 }
                 ast::Statement::Import(kind) => match kind {
                     ast::Import::Absolute(path) => {
-                        if self.get_resource(&path).is_ok() {
+                        if self.get_local_resource(&path[..0], Visibility::Module).is_ok() {
                             return Err(AnalysisError::ResourceShadowing { path })
                         }
 
