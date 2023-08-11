@@ -286,10 +286,11 @@ impl<'a> ModuleTranspiler<'a> {
                 function,
                 arguments,
             } => {
-                let head = self
-                    .scope
-                    .get_function_head(&function)
-                    .expect("called function exists");
+
+                let head = match self.scope.get_resource_no_vis(&function) {
+                    Ok(ResourceKind::Function(func)) => func,
+                    _ => unreachable!("called function exists"),
+                };
                 let function = if head.is_variadic.is_some() {
                     function.last().expect("path is not empty").clone()
                 } else {

@@ -47,6 +47,14 @@ thread_local! {
 }
 
 
+pub(crate) fn follow_alias(path: &[String], visibility: Visibility) -> Result<&ResourceKind, AnalysisError> {
+    PACKAGES.with(|p| 
+        p.get(&path[0])
+        .ok_or_else(|| AnalysisError::UnknownResource(Vec::from(path)))
+        .and_then(|m| m.get_local_resource(&path[1..], visibility))
+        .map(|x| unsafe { &*(x as *const _) }) // lifetimes!
+    )
+}
 
 
 #[derive(Debug, Clone)]
@@ -389,7 +397,7 @@ impl FunctionScope {
         &'a self,
         module: &'a ModuleScope,
         name: &Vec<String>,
-    ) -> Result<FunctionHead, AnalysisError> {
+    ) -> Result<&FunctionHead, AnalysisError> {
         module.get_function_head(name)
     }
 
@@ -755,10 +763,10 @@ impl FunctionScope {
 
                 Ok(Expression {
                     data: ExpressionData::FunctionCall {
-                        function: function.path,
+                        function: function.path.clone(),
                         arguments: typed_args,
                     },
-                    type_: function.return_type,
+                    type_: function.return_type.clone(),
                 })
             }
             ast::Expression::Variable(name) => Ok(match self.get_variable(module, &name)? {
@@ -841,7 +849,7 @@ impl FunctionScope {
                                 path: ty.path.clone(),
                                 members: typed_members,
                             },
-                            type_: Type::Path(ty.path),
+                            type_: Type::Path(ty.path.clone()),
                         })
                     }
                     _ => Err(AnalysisError::NonStructInit {
@@ -858,7 +866,8 @@ impl FunctionScope {
 pub(crate) enum ResourceKind {
     Function(FunctionHead),
     Type(TypeDefinition),
-    #[allow(dead_code)] Variable(Type),
+    #[allow(dead_code)] 
+    Variable(Type),
     Module(ModuleScope),
     Alias(Vec<String>)
 }
@@ -867,6 +876,8 @@ pub(crate) enum ResourceKind {
 pub(crate) enum Visibility {
     Public,
     Module,
+    // internal visibility for unrestricted resource access
+    Bypass,
 }
 
 impl Default for Visibility {
@@ -1044,8 +1055,20 @@ impl ModuleScope {
                     self.statements.push(Statement::StructDeclaration { name })
                 }
                 ast::Statement::Import(kind) => match kind {
-                    ast::Import::Absolute(_) => todo!("absolute paths"),
-                    ast::Import::Relative(name) => self.import_local_module(name)?,
+                    ast::Import::Absolute(path) => {
+                        if self.get_resource(&path).is_ok() {
+                            return Err(AnalysisError::ResourceShadowing { path })
+                        }
+
+                        self.statements
+                            .push(Statement::Import(path.clone()));
+                
+                        self.resources.insert(path.last().expect("path is not empty").clone(), Resource {
+                            kind: ResourceKind::Alias(path),
+                            visibility: Visibility::Module 
+                        });
+                    },
+                    ast::Import::Relative(name) => self.add_submodule(name)?,
                 },
                 other @ (ast::Statement::Expression(_)
                 | ast::Statement::If { .. }
@@ -1064,7 +1087,7 @@ impl ModuleScope {
         Ok(())
     }
 
-    fn import_local_module(&mut self, end: String) -> Result<(), AnalysisError> {
+    fn add_submodule(&mut self, end: String) -> Result<(), AnalysisError> {
         let mut submodule = self.child(end.clone())?;
 
         submodule.declaration_pass()?;
@@ -1087,59 +1110,81 @@ impl ModuleScope {
         self.declared_functions = declared_functions;
 
         for res in self.resources.values_mut() {
-            if let Resource { kind: ResourceKind::Module(m), ..} = res {
-                m.execution_pass()?;
+            match &mut res.kind {
+                ResourceKind::Module(m) => {
+                    m.execution_pass()?;
+                },
+                ResourceKind::Alias(path) => {
+                    let _ = follow_alias(&path, Visibility::Public);
+                },
+                _ => {}
+
             }
         }
 
         Ok(())
     }
 
-    fn get_resource_no_global(&self, path: &[String], mut visibility: Visibility) -> Result<ResourceKind, ()> {
+    fn get_local_resource(&self, path: &[String], mut visibility: Visibility) -> Result<&ResourceKind, AnalysisError> {
 
         let mut module = self;
 
         for (index, name) in path.iter().enumerate() {
             if index + 1 == path.len() {
-                return match module.resources.get(name).cloned() {
-                    Some(Resource { kind, visibility: vis }) if vis <= visibility => Ok(kind),
-                    _ => Err(())
+                return match module.resources.get(name) {
+                    Some(Resource { kind, visibility: vis }) if *vis <= visibility => Ok(kind),
+                    _ => Err(AnalysisError::UnknownResource(Vec::from(path)))
                 }
             }
             match module.resources.get(name) {
+                Some(Resource {kind: ResourceKind::Alias(path), visibility: vis}) if vis <= &visibility => {
+                    if let ResourceKind::Module(m) = follow_alias(path, Visibility::Public)? {
+                        module = m
+                    }
+                },
                 Some(Resource {kind: ResourceKind::Module(m), visibility: vis}) if vis <= &visibility => module = m,
-                _ => return Err(()),
+                _ => return Err(AnalysisError::UnknownResource(Vec::from(path)))
             }
 
             visibility = match visibility {
                 Visibility::Public => Visibility::Public,
                 // parent modules cannot access the private resources of their child module
-                Visibility::Module => Visibility::Public
+                Visibility::Module => Visibility::Public,
+                Visibility::Bypass => Visibility::Bypass,
             }
         }
-
-        Err(())
+        
+        Err(AnalysisError::UnknownResource(Vec::from(path)))
     }
 
-    pub(crate) fn get_resource(&self, path: &[String]) -> Result<ResourceKind, AnalysisError> {
+    pub(crate) fn get_resource(&self, path: &Vec<String>) -> Result<&ResourceKind, AnalysisError> {
 
         if path.len() == 1 {
             if let Some(res) = builtins::TYPES.get(path) {
-                return Ok(res.clone());
+                return Ok(res);
             }
         }
 
-        let local = self.get_resource_no_global(path, Visibility::Module);
-
-        if let Ok(res) = local {
+        if let Ok(res) = self.get_local_resource(path, Visibility::Module) {
             return Ok(res);
         }
 
-        if let Some(res) = PACKAGES.with(|p| p.get(&path[0]).map(|m|m.get_resource_no_global(&path[1..], Visibility::Public))) {
-            return res.map_err(|_| AnalysisError::UnknownResource(Vec::from(path.clone())));
+        return follow_alias(path, Visibility::Public).map(|x| unsafe { &*(x as *const _) })
+    }
+
+    pub(crate) fn get_resource_no_vis(&self, path: &Vec<String>) -> Result<&ResourceKind, AnalysisError> {
+
+        if path.len() == 1 {
+            if let Some(res) = builtins::TYPES.get(path) {
+                return Ok(res);
+            }
         }
 
-        return Err(AnalysisError::UnknownResource(Vec::from(path.clone())));
+        if let Ok(res) = self.get_local_resource(path, Visibility::Bypass) {
+            return Ok(res);
+        }
+
+        return follow_alias(path, Visibility::Bypass).map(|x| unsafe { &*(x as *const _) })
     }
 
     pub(crate) fn get_struct_member(
@@ -1147,8 +1192,8 @@ impl ModuleScope {
         instance: Expression,
         path: &[String],
     ) -> Result<Expression, AnalysisError> {
-        let typedef = match instance.type_ {
-            Type::Path(ref path) => self.get_type(path)?,
+        let typedef = match &instance.type_ {
+            Type::Path(path) => self.get_type(path)?,
             _ => {
                 return Err(AnalysisError::MemberAccessOnNonStruct {
                     instance_type: instance.type_.clone(),
@@ -1156,7 +1201,7 @@ impl ModuleScope {
                 })
             }
         };
-        match typedef.kind {
+        match &typedef.kind {
             TypeKind::Struct { members } => match members.get(&path[0]) {
                 Some(member) => {
                     let instance = Expression {
@@ -1193,14 +1238,14 @@ impl ModuleScope {
     pub(crate) fn get_function_head(
         &self,
         path: &Vec<String>,
-    ) -> Result<FunctionHead, AnalysisError> {
+    ) -> Result<&FunctionHead, AnalysisError> {
         match self.get_resource(path)? {
             ResourceKind::Function(func) => Ok(func),
             _ => Err(AnalysisError::UnknownFunction(path.clone())),
         }
     }
 
-    pub fn get_type(&self, path: &Vec<String>) -> Result<TypeDefinition, AnalysisError> {
+    pub fn get_type(&self, path: &Vec<String>) -> Result<&TypeDefinition, AnalysisError> {
         match self.get_resource(path)? {
             ResourceKind::Type(ty) => Ok(ty),
             _ => Err(AnalysisError::UnknownType(path.clone())),

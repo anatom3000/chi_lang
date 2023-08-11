@@ -1,6 +1,10 @@
+import modules.utils
+
 import .point
 
 def add(a: int, b: int) -> int {
+    utils.printf("Adding %i and %i\n", a, b)
+
     return a + b
 }
 
