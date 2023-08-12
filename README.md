@@ -73,7 +73,8 @@ Executable generation is only supported on Linux (and perhaps MacOS, untested), 
     - [ ] Compile-time code execution
 
 ### Syntax spec
-> Note: `?sep` indicates that the preceding block can be omitted at the last repetition of a `*` or `+` block.
+> [!NOTE]
+> `?sep` indicates that the preceding block can be omitted at the last repetition of a `*` or `+` block.
 ```ebnf
 program = statement_list
 
