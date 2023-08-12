@@ -8,7 +8,7 @@ use std::{fs, mem, vec};
 
 use crate::ast::{self, Literal};
 use crate::parser::ParserError;
-use crate::transpiler::{generate_makefile, ModuleTranspiler};
+use crate::transpiler::ModuleTranspiler;
 use crate::{lexer, parser, TranspileError};
 
 
@@ -47,7 +47,7 @@ thread_local! {
 }
 
 
-pub(crate) fn follow_alias(path: &[String], visibility: Visibility) -> Result<&ResourceKind, AnalysisError> {
+pub(crate) fn get_global_resource(path: &[String], visibility: Visibility) -> Result<&ResourceKind, AnalysisError> {
     PACKAGES.with(|p| 
         p.get(&path[0])
         .ok_or_else(|| AnalysisError::UnknownResource(Vec::from(path)))
@@ -376,7 +376,7 @@ pub(crate) enum Statement {
         body: Vec<Statement>,
     },
     Return(Option<Expression>),
-    Import(Vec<String>),
+    Import(String),
 }
 
 pub(crate) enum VariableOrAttribute {
@@ -1059,9 +1059,6 @@ impl ModuleScope {
                             return Err(AnalysisError::ResourceShadowing { path })
                         }
 
-                        self.statements
-                            .push(Statement::Import(path.clone()));
-                
                         self.resources.insert(path.last().expect("path is not empty").clone(), Resource {
                             kind: ResourceKind::Alias(path),
                             visibility: Visibility::Module 
@@ -1092,7 +1089,7 @@ impl ModuleScope {
         submodule.declaration_pass()?;
 
         self.statements
-            .push(Statement::Import(submodule.path.clone()));
+            .push(Statement::Import(end.clone()));
 
         self.resources.insert(end, ResourceKind::Module(submodule).into());
 
@@ -1114,7 +1111,7 @@ impl ModuleScope {
                     m.execution_pass()?;
                 },
                 ResourceKind::Alias(path) => {
-                    let _ = follow_alias(&path, Visibility::Public);
+                    let _ = get_global_resource(&path, Visibility::Public);
                 },
                 _ => {}
 
@@ -1137,7 +1134,7 @@ impl ModuleScope {
             }
             match module.resources.get(name) {
                 Some(Resource {kind: ResourceKind::Alias(path), visibility: vis}) if vis <= &visibility => {
-                    if let ResourceKind::Module(m) = follow_alias(path, Visibility::Public)? {
+                    if let ResourceKind::Module(m) = get_global_resource(path, Visibility::Public)? {
                         module = m
                     }
                 },
@@ -1168,7 +1165,7 @@ impl ModuleScope {
             return Ok(res);
         }
 
-        return follow_alias(path, Visibility::Public).map(|x| unsafe { &*(x as *const _) })
+        return get_global_resource(path, Visibility::Public).map(|x| unsafe { &*(x as *const _) })
     }
 
     pub(crate) fn get_resource_no_vis(&self, path: &Vec<String>) -> Result<&ResourceKind, AnalysisError> {
@@ -1183,7 +1180,7 @@ impl ModuleScope {
             return Ok(res);
         }
 
-        return follow_alias(path, Visibility::Bypass).map(|x| unsafe { &*(x as *const _) })
+        return get_global_resource(path, Visibility::Bypass).map(|x| unsafe { &*(x as *const _) })
     }
 
     pub(crate) fn get_struct_member(
@@ -1464,33 +1461,10 @@ impl ModuleScope {
         })
     }
 
-    pub fn transpile(&mut self, target_dir: PathBuf) -> Result<(), TranspileError> {
-        let mut transpiled_modules = HashMap::new();
-        let module_name = self.path[0].clone();
+    pub fn transpile(&mut self, target_file: PathBuf) -> Result<(), TranspileError> {
+        let transpiled = ModuleTranspiler::transpile(self);
 
-        let is_main = self.is_main;
-
-        ModuleTranspiler::transpile(self, &mut transpiled_modules, is_main);
-
-        let mut files = vec![];
-        for m in transpiled_modules.into_values() {
-            let source = m.source();
-            let header = m.header();
-
-            files.push(format!("./{}", m.source_path.display()));
-
-            let source_path = target_dir.join(m.source_path);
-            let header_path = target_dir.join(m.header_path);
-            fs::create_dir_all(source_path.clone().parent().unwrap()).unwrap();
-
-            fs::write(source_path, source).map_err(|e| TranspileError::FileError(e))?;
-            fs::write(header_path, header).map_err(|e| TranspileError::FileError(e))?;
-        }
-
-        let makefile_path = target_dir.join("Makefile");
-        let makefile_contents = generate_makefile(&module_name, &files);
-
-        fs::write(makefile_path, makefile_contents).map_err(|e| TranspileError::FileError(e))?;
+        fs::write(target_file, transpiled.to_string()).map_err(|e| TranspileError::FileError(e))?;
 
         Ok(())
     }

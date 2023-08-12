@@ -1,3 +1,5 @@
+import modules.math.point
+
 import .math
 import .utils
 
@@ -18,7 +20,7 @@ def main() {
         y: -1.0
     }
 
-    let diff = math.point.add(origin, p)
+    let diff = point.add(origin, p)
 
     // relative path
     do_nothing()

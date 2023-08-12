@@ -1,4 +1,4 @@
-use std::io;
+use std::{io, fs};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -24,29 +24,47 @@ pub enum TranspileError {
 }
 
 fn transpile(main_file: &str, target_dir: &str) -> Result<String, TranspileError> {
+    fs::create_dir_all(target_dir).map_err(|e| TranspileError::FileError(e))?;
+
     let main_path = Path::new(main_file).to_path_buf();
 
     let module_name = ModuleScope::main(main_path)?;
 
+    let mut transpiled_file = PathBuf::from(target_dir);
+    transpiled_file.push(format!("{module_name}.c"));
+
     PACKAGES.with(|p| p.get_mut(&module_name).expect("ModuleScope::main adds module to PACKAGES").analyse()).map_err(|e| TranspileError::AnalysisError(e))?;
 
-    PACKAGES.with(|p| p.get_mut(&module_name).expect("ModuleScope::main adds module to PACKAGES").transpile(target_dir.into()))?;
+    PACKAGES.with(|p| p.get_mut(&module_name).expect("ModuleScope::main adds module to PACKAGES").transpile(transpiled_file))?;
 
     Ok(module_name)
 }
 
 fn compile(main_file: &str, target_dir: &str) -> Result<String, CompilationError> {
+    // FIXME: outputs to generated
+
     let module_name =
         transpile(main_file, target_dir).map_err(|e| CompilationError::TranspileError(e))?;
 
-    compilation::compile(PathBuf::from(target_dir))?;
+    let mut transpiled_file = PathBuf::from(target_dir);
+    let mut log_file = PathBuf::from(target_dir);
+    let mut binary_file = PathBuf::from(target_dir);
+
+    transpiled_file.push(format!("{module_name}.c"));
+    log_file.push("chi_compiler.log");
+    binary_file.push(format!("{module_name}"));
+
+    compilation::compile(transpiled_file, log_file, binary_file)?;
     Ok(module_name)
 }
 
 pub fn compile_and_run(main_file: &str, target_dir: &str) -> Result<u8, CompilationError> {
     let module_name = compile(main_file, target_dir)?;
 
-    Ok(Command::new(format!("{target_dir}/build/{module_name}"))
+    let mut binary_file = PathBuf::from(target_dir);
+    binary_file.push(format!("{module_name}"));
+
+    Ok(Command::new(format!("{}", binary_file.display()))
         .status()
         .unwrap()
         .code()
@@ -59,15 +77,18 @@ mod tests {
         main_file: &'static str,
         target_dir: &str,
     ) -> Result<u8, super::CompilationError> {
-        use std::{fs, process};
+        use std::{fs, process, path::PathBuf};
 
         // clear the previously generated code
         let _ = fs::remove_dir_all(target_dir);
 
         let module_name = super::compile(main_file, target_dir)?;
 
+        let mut binary_file = PathBuf::from(target_dir);
+        binary_file.push(format!("{module_name}"));    
+
         Ok(
-            process::Command::new(format!("{target_dir}/build/{module_name}"))
+            process::Command::new(format!("{}", binary_file.display()))
                 // don't print program output during tests!
                 .stdout(process::Stdio::null())
                 .stderr(process::Stdio::null())

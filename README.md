@@ -64,6 +64,7 @@ Executable generation is only supported on Linux (and perhaps MacOS, untested), 
     - [ ] Guaranteed function argument evaluation order
     - [ ] Do not rely on C's operator precedence
     - [ ] Array as values
+    - [ ] Referencing of rvalue expressions
 - [ ] Traits
 - [ ] A standard library
 - [ ] Better error messages

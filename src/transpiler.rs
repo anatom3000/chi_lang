@@ -1,234 +1,172 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::{HashMap, HashSet}, fmt::Display};
 
 use crate::{
-    analysis::{ExpressionData, ModuleScope, ResourceKind, Statement, Type, TypeKind, Resource},
+    analysis::{ExpressionData, ModuleScope, ResourceKind, Statement, Type, TypeKind},
     ast::Literal,
 };
 
 pub(crate) struct ModuleTranspiler<'a> {
-    pub(crate) source_path: PathBuf,
-    pub(crate) header_path: PathBuf,
-    source: Vec<String>,
-    header: Vec<String>,
     indent: usize,
     scope: &'a ModuleScope,
-    function_variables: HashMap<String, usize>
+    shadowed_variables: HashMap<String, usize>,
+    includes: HashSet<String>,
+    global_variables: Vec<String>,
+    functions: Vec<(String, String)>, // declaration-body pairs
+    structs: Vec<(String, String)>, // name-body pairs
 }
 
 impl<'a> ModuleTranspiler<'a> {
+
     pub fn transpile(
         scope: &'a ModuleScope,
-        transpiled_modules: &mut HashMap<Vec<String>, ModuleTranspiler<'a>>,
-        is_main: bool,
-    ) {
-
-        for (_, res) in scope.resources.iter() {
-            if let Resource {kind: ResourceKind::Module(m), ..} = res {
-                ModuleTranspiler::transpile(m, transpiled_modules, false)
-            }
-        }
-
-        if transpiled_modules.contains_key(&scope.path) {
-            return;
-        }
-
-        let piter = if is_main {
-            scope.path.iter()
-        } else {
-            let mut p = scope.path.iter();
-            p.next();
-            p
-        };
-
-        let mut source_path: PathBuf = piter.collect();
-        let mut header_path: PathBuf = source_path.clone();
-
-        source_path.set_extension("c");
-        header_path.set_extension("h");
-
-        let path = scope.path.clone();
-
+    ) -> ModuleTranspiler { 
         let mut new = ModuleTranspiler {
-            source_path,
-            header_path,
-            source: vec![],
-            header: vec![],
             indent: 0,
             scope,
-            function_variables: HashMap::new()
+            shadowed_variables: HashMap::new(),
+            includes: HashSet::from([
+                "<stddef.h>".to_string(),
+                "<stdbool.h>".to_string(),
+                "<stdint.h>".to_string(),
+            ]),
+            global_variables: vec![],
+            functions: vec![],
+            structs: vec![]
         };
 
         // TODO: lazily add includes (e.g. include stddef.h only when NULL is used)
-        let mut includes = vec![
-            "<stddef.h>".to_string(),
-            "<stdbool.h>".to_string(),
-            "<stdint.h>".to_string(),
-        ];
         for ext in &new.scope.externs {
-            if ext.starts_with('<') && ext.ends_with('>') {
-                if includes.contains(ext) {
-                    continue;
-                }
+            new.includes.insert(if ext.starts_with('<') && ext.ends_with('>') { ext.clone() } else { format!("\"{}\"", ext) });
+        }
 
-                includes.push(ext.clone());
-            } else {
-                let ext = format!("\"{}\"", ext);
-                if includes.contains(&ext) {
-                    continue;
-                }
+        for stmt in &new.scope.statements {
+            match stmt {
+                Statement::FunctionDeclaration { name } => {
+                    let func = new
+                        .scope
+                        .get_function(&name)
+                        .expect("declared function exists")
+                        .clone();
+    
+                    let mut args = func
+                        .head
+                        .arguments
+                        .into_iter()
+                        .map(|(name, type_)| {
+                            new.shadowed_variables.insert(name.clone(), 0);
+                            new.transpile_declaration(type_, name)
+                        })
+                        .collect::<Vec<String>>()
+                        .join(", ");
+    
+                    if args.is_empty() {
+                        args = "void".to_string();
+                    }
+    
+                    // don't "namespacify" the function name if function is the main function or an extern function
+                    let func_name = new.transpile_path(&func.head.path);
+                    let declaration = new
+                        .transpile_declaration(func.head.return_type, format!("{func_name}({args})"));
 
-                includes.push(ext);
+                    let mut code = vec![];
+                    new.indent += 1;
+                    for stmt in func.statements {
+                        code.push(new.transpile_statement(stmt))
+                    }
+                    new.shadowed_variables.clear();
+                    new.indent -= 1;
+                    //new.source.pop();
+                    new.functions.push((declaration, code.join("\n")))
+                }
+                Statement::StructDeclaration { name } => {
+                    let struct_type = new
+                        .scope
+                        .get_type(&vec![name.clone()])
+                        .expect("declared struct exists");
+    
+                    let TypeKind::Struct {members} = struct_type.kind.clone()
+                        else { unreachable!("defined struct should have struct type ") };
+    
+                    let struct_name = new.transpile_path(&struct_type.path);
+
+                    let mut body = vec![];
+                    new.indent += 1;
+                    for (m_name, m_type) in members {
+                        let decl = new.transpile_declaration(m_type, m_name);
+                        body.push(new.add_line(format!("{decl};")));
+                    }
+                    new.indent -= 1;
+                    
+                    new.structs.push((struct_name, body.join("\n")));
+                }
+                Statement::LetAssignment { .. } => todo!("global variable transpilation"),
+                Statement::Import(child) => {
+                    let submodule = match &new.scope.resources.get(child).expect("imported submodule is valid").kind {
+                        ResourceKind::Module(ref m) => m,
+                        _ => unreachable!("imported submodule is a resource of type Module")
+                    };
+                    let mut transpiled_submodule = ModuleTranspiler::transpile(submodule);
+
+                    new.includes.extend(transpiled_submodule.includes.drain());
+                    new.global_variables.append(&mut transpiled_submodule.global_variables);
+                    new.functions.append(&mut transpiled_submodule.functions);
+                    new.structs.append(&mut transpiled_submodule.structs);
+
+                },
+                Statement::Expression(_)
+                | Statement::If { .. }
+                | Statement::Assignment { .. }
+                | Statement::Return(_)
+                | Statement::While { .. } => unreachable!("those statements cannot exist in a module scope")
             }
         }
 
-        let guard_name = format!(
-            "_{}_H",
-            path.iter()
-                .map(|x| x.to_uppercase())
-                .collect::<Vec<_>>()
-                .join("_")
-        );
-
-        new.add_header_line(format!("#ifndef {guard_name}"));
-        new.add_header_line(format!("#define {guard_name}"));
-        new.add_new_header_line();
-
-        for inc in includes {
-            new.add_header_line(format!("#include {}", inc));
-        }
-
-        new.add_line(format!("#include \"{}\"", new.header_path.display()));
-
-        new.add_new_line();
-
-        for stmt in &new.scope.statements {
-            new.transpile_statement(stmt.clone());
-        }
-
-        new.add_new_header_line();
-        new.add_header_line("#endif".to_string());
-
-        transpiled_modules.insert(path, new);
-
+        new
     }
 
-    fn add_line(&mut self, line: String) {
-        self.source
-            .push(format!("{}{line}", "    ".repeat(self.indent)))
+    fn add_line(&mut self, line: String) -> String {
+        format!("{}{line}", "    ".repeat(self.indent))
     }
 
-    fn add_new_line(&mut self) {
-        self.source.push(String::new())
-    }
-
-    fn add_header_line(&mut self, line: String) {
-        self.header.push(format!("{}{line}", "    ".repeat(self.indent)))
-    }
-
-    fn add_new_header_line(&mut self) {
-        self.header.push(String::new())
-    }
-
-    fn transpile_statement(&mut self, stmt: Statement) {
+    fn transpile_statement(&mut self, stmt: Statement) -> String {
         use Statement::*;
         match stmt {
             Expression(expr) => {
                 let expr = self.transpile_expression(expr.data);
-                self.add_line(format!("{expr};"));
+                self.add_line(format!("{expr};"))
             }
             LetAssignment { name, value } => {
                 let expr = self.transpile_expression(value.data);
                 let name = self.transpile_new_variable(name);
                 let declaration = self.transpile_declaration(value.type_, name);
 
-                self.add_line(format!("{} = {};", declaration, expr));
-                // self.add_new_line();
+                self.add_line(format!("{} = {};", declaration, expr))
             }
             Assignment { lhs, rhs } => {
                 let lhs = self.transpile_expression(lhs.data);
                 let rhs = self.transpile_expression(rhs.data);
 
-                self.add_line(format!("{} = {};", lhs, rhs));
-                // self.add_new_line();
-            }
-            FunctionDeclaration { name } => {
-                let func = self
-                    .scope
-                    .get_function(&name)
-                    .expect("declared function exists")
-                    .clone();
-
-                let mut args = func
-                    .head
-                    .arguments
-                    .into_iter()
-                    .map(|(name, type_)| {
-                        self.function_variables.insert(name.clone(), 0);
-                        self.transpile_declaration(type_, name)
-                    })
-                    .collect::<Vec<String>>()
-                    .join(", ");
-
-                if args.is_empty() {
-                    args = "void".to_string();
-                }
-
-                // don't "namespacify" the function name if function is the main function or an extern function
-                let func_name = self.transpile_path(&func.head.path);
-                let declaration = self
-                    .transpile_declaration(func.head.return_type, format!("{func_name}({args})"));
-                self.add_header_line(format!("{declaration};"));
-                self.add_line(format!("{declaration} {{"));
-                self.indent += 1;
-
-                for stmt in func.statements {
-                    self.transpile_statement(stmt)
-                }
-                self.function_variables.clear();
-
-                self.indent -= 1;
-                //self.source.pop();
-                self.add_line('}'.to_string());
-                self.add_new_line();
-            }
-            StructDeclaration { name } => {
-                let struct_type = self
-                    .scope
-                    .get_type(&vec![name.clone()])
-                    .expect("declared struct exists");
-
-                let TypeKind::Struct {members} = struct_type.kind.clone()
-                    else { unreachable!("defined struct should have struct type ") };
-
-                let struct_name = self.transpile_path(&struct_type.path);
-                self.add_header_line(format!("typedef struct {struct_name} {{"));
-                self.indent += 1;
-                for (m_name, m_type) in members {
-                    let decl = self.transpile_declaration(m_type, m_name);
-                    self.add_header_line(format!("{decl};"));
-                }
-                self.indent -= 1;
-
-                self.add_header_line(format!("}} {struct_name};"));
-                self.add_new_header_line();
+                self.add_line(format!("{} = {};", lhs, rhs))
             }
             If {
                 conditions_and_bodies,
                 else_body,
             } => {
+                let mut code = vec![];
+
                 let mut first = true;
                 for (condition, body) in conditions_and_bodies {
                     let condition = self.transpile_expression(condition.data);
                     if first {
                         first = false;
-                        self.add_line(format!("if ({}) {{", condition));
+                        code.push(self.add_line(format!("if ({}) {{", condition)));
                     } else {
-                        self.add_line(format!("}} else if ({}) {{", condition));
+                        code.push(self.add_line(format!("}} else if ({}) {{", condition)));
                     }
 
                     self.indent += 1;
                     for stmt in body {
-                        self.transpile_statement(stmt);
+                        code.push(self.transpile_statement(stmt));
                     }
                     self.indent -= 1;
                 }
@@ -237,24 +175,30 @@ impl<'a> ModuleTranspiler<'a> {
                     self.add_line("} else {".to_string());
                     self.indent += 1;
                     for stmt in body {
-                        self.transpile_statement(stmt)
+                        code.push(self.transpile_statement(stmt));
                     }
                     self.indent -= 1;
                 }
 
-                self.add_line('}'.to_string());
+                code.push(self.add_line('}'.to_string()));
+
+                code.join("\n")
             }
             While { condition, body } => {
+                let mut code = vec![];
+
                 let condition = self.transpile_expression(condition.data);
-                self.add_line(format!("while ({}) {{", condition));
+                code.push(self.add_line(format!("while ({}) {{", condition)));
 
                 self.indent += 1;
                 for stmt in body {
-                    self.transpile_statement(stmt);
+                    code.push(self.transpile_statement(stmt));
                 }
                 self.indent -= 1;
 
-                self.add_line('}'.to_string())
+                code.push(self.add_line('}'.to_string()));
+
+                code.join("\n")
             }
             Return(expr) => {
                 match expr {
@@ -263,9 +207,11 @@ impl<'a> ModuleTranspiler<'a> {
                         self.add_line(format!("return {};", expr))
                     }
                     None => self.add_line(format!("return;")),
-                };
-            }
-            Import(path) => self.add_header_line(format!("#include \"{}.h\"", path[1..].join("/"))),
+                }
+            },
+            StructDeclaration { .. }
+            | FunctionDeclaration { .. }
+            | Import(_) => unreachable!("those statements cannot exist in a function scope")
         }
     }
 
@@ -368,16 +314,16 @@ impl<'a> ModuleTranspiler<'a> {
     }
 
     fn transpile_variable(&self, name: String) -> String {
-        let n = self.function_variables.get(&name).expect("used variables should be declared").clone();
+        let n = self.shadowed_variables.get(&name).expect("used variables should be declared").clone();
         format!("{name}{}", "_".repeat(n))
     }
 
     fn transpile_new_variable(&mut self, name: String) -> String {
-        let n = match self.function_variables.get(&name).cloned() {
+        let n = match self.shadowed_variables.get(&name).cloned() {
             Some(n) => n+1,
             None => 0
         };
-        self.function_variables.insert(name.clone(), n);
+        self.shadowed_variables.insert(name.clone(), n);
         self.transpile_variable(name)
     }
 
@@ -419,54 +365,57 @@ impl<'a> ModuleTranspiler<'a> {
     }
 }
 
-impl<'a> ModuleTranspiler<'a> {
-    pub fn source(&self) -> String {
-        self.source.join("\n").trim().to_string()
+impl<'a> Display for ModuleTranspiler<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut something = false;
+        
+        for inc in &self.includes {
+            something = true;
+            writeln!(f, "#include {inc}")?;
+        }
+
+        if something { writeln!(f)?; }
+        something = false;
+
+        for (name, _) in &self.structs {
+            something = true;
+
+            writeln!(f, "typedef struct {name} {name};")?;
+        }
+
+        if something { writeln!(f)?; }
+        something = false;
+
+        for (decl, _) in &self.functions {
+            something = true;
+
+            writeln!(f, "{decl};")?;
+        }
+
+        if something { writeln!(f)?; }
+        something = false;
+
+        for var in &self.global_variables {
+            something = true;
+
+            writeln!(f, "{var};")?;
+        }
+
+        if something { writeln!(f)?; }
+        something = false;
+
+        for (name, body) in &self.structs {
+            something = true;
+
+            writeln!(f, "struct {name} {{\n{body}\n}};\n")?;
+        }
+
+        if something { writeln!(f)?; }
+
+        for (decl, body) in &self.functions {
+            writeln!(f, "{decl} {{\n{body}\n}}\n")?;
+        }
+
+        Ok(())
     }
-
-    pub fn header(&self) -> String {
-        self.header.join("\n").trim().to_string()
-    }
-}
-
-pub(crate) fn generate_makefile(module_name: &str, files: &[String]) -> String {
-    let srcs = files
-        .into_iter()
-        .map(|x| format!("$(ROOT_DIR){}", &x[1..]))
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    // base makefile credit: https://makefiletutorial.com/#makefile-cookbook
-    format!(
-        "\
-ROOT_DIR := $(dir $(lastword $(MAKEFILE_LIST)))
-
-SRCS := {srcs}
-TARGET_EXEC := {module_name}
-
-BUILD_DIR := $(ROOT_DIR)build
-
-OBJS := $(SRCS:%=$(BUILD_DIR)/%.o)
-
-DEPS := $(OBJS:.o=.d)
-
-INC_DIRS := $(ROOT_DIR)
-INC_FLAGS := $(addprefix -I,$(INC_DIRS))
-
-CPPFLAGS := $(INC_FLAGS) -MMD -MP
-
-$(BUILD_DIR)/$(TARGET_EXEC): $(OBJS)
-	$(CXX) $(OBJS) -o $@ $(LDFLAGS)
-
-$(BUILD_DIR)/%.c.o: %.c
-	mkdir -p $(dir $@)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
-
-.PHONY: clean
-clean:
-	rm -r $(BUILD_DIR)
-
--include $(DEPS)
-"
-    )
 }

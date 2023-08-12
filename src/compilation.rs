@@ -10,18 +10,16 @@ pub enum CompilationError {
     TranspileError(TranspileError),
 }
 
-pub fn compile(target_dir: PathBuf) -> Result<(), CompilationError> {
-    if cfg!(target_os = "windows") {
-        return Err(CompilationError::UnsupportedPlatform("Windows"));
-    }
+pub fn compile(transpiled_file: PathBuf, log_file: PathBuf, binary_file: PathBuf) -> Result<(), CompilationError> {
 
-    let makefile_path = target_dir.join("Makefile");
+    #[cfg(target_os = "windows")]
+    return Err(CompilationError::UnsupportedPlatform("windows"));
 
-    assert!(makefile_path.exists());
+    let command = format!("cc {} -o {}", transpiled_file.display(), binary_file.display());
 
     let output = Command::new("sh")
         .arg("-c")
-        .arg(format!("make -f {}", makefile_path.display()))
+        .arg(command)
         .output()
         .map_err(|e| CompilationError::IoError(e))?;
 
@@ -31,7 +29,7 @@ pub fn compile(target_dir: PathBuf) -> Result<(), CompilationError> {
         ));
     }
 
-    fs::write(target_dir.join("build/chi_compile.log"), output.stdout)
+    fs::write(log_file, output.stdout)
         .map_err(|e| CompilationError::IoError(e))?;
 
     Ok(())
