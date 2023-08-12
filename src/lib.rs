@@ -41,7 +41,6 @@ fn transpile(main_file: &str, target_dir: &str) -> Result<String, TranspileError
 }
 
 fn compile(main_file: &str, target_dir: &str) -> Result<String, CompilationError> {
-    // FIXME: outputs to generated
 
     let module_name =
         transpile(main_file, target_dir).map_err(|e| CompilationError::TranspileError(e))?;
