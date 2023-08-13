@@ -149,6 +149,7 @@ impl Parser {
                 | TokenData::Plus
                 | TokenData::Minus
                 | TokenData::Ref
+                | TokenData::MutRef
                 | TokenData::Star,
             ) => {
                 let operator = self.current_token().expect("current token should be valid");
@@ -405,8 +406,18 @@ impl Parser {
             Some(TokenData::Identifier(_)) => Type::Path(self.resource_path()?),
             Some(TokenData::Ref) => {
                 self.current += 1;
-                Type::Reference(Box::new(self.type_()?))
-            }
+                Type::Reference {
+                    inner: Box::new(self.type_()?),
+                    mutable: false,
+                }
+            },
+            Some(TokenData::MutRef) => {
+                self.current += 1;
+                Type::Reference {
+                    inner: Box::new(self.type_()?),
+                    mutable: true,
+                }
+            },
             Some(TokenData::LeftParen) => {
                 self.current += 1;
                 let ty = self.type_()?;

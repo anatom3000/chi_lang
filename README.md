@@ -7,7 +7,7 @@ The `examples/` folder shows the basic syntax and semantics of the language.
 Example program (from `examples/recursion.chi`): 
 ```groovy
 extern "<stdio.h>" {
-    def printf(fmt_str: &char, ...)
+    def printf(fmt_str: !char, ...)
 }
 
 def fib(n: int) -> int {
@@ -52,15 +52,16 @@ Executable generation is only supported on Linux (and perhaps MacOS, untested), 
 
 #### Easy nice-to-haves
 - [x] Absolute paths
-- [ ] `unsafe` block that does nothing but make Rust programmers confortable
 - [ ] Syntactic sugar: `if *** do stmt`
 - [ ] Operator overloading
 - [ ] Lazily `#include`s (e.g. import `stdbool.h` iff `bool` is used in the file)
+- [ ] Basic ownership
 
 
 #### Hard nice-to-haves
 - [ ] Expression decomposition
     - [ ] Expression-scope blocks
+    - [ ] `unsafe` block that does nothing but make Rust programmers confortable
     - [ ] Guaranteed function argument evaluation order
     - [ ] Do not rely on C's operator precedence
     - [ ] Array as values
@@ -122,7 +123,7 @@ comparison = term ( (">" | "<" | ">=" | "<=") term )*
 term = factor ( ("+" | "-") factor)*
 factor = unary ( ("*" | "/") unary)*
 
-unary = ("not" | "+" | "-" | "&" | "*") unary
+unary = ("not" | "+" | "-" | "&" | "!" | "*") unary
       | primary
 
 primary = INTEGER
@@ -144,5 +145,6 @@ struct_init = IDENTIFIER "{" ( IDENTIFIER ":" expression "," )* "}"
 (* type *)
 type = IDENTIFIER
      | "&" type
+     | "!" type
      | "(" type ")"
 ```

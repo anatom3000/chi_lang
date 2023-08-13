@@ -1,16 +1,25 @@
 extern "<stdio.h>" {
-    def printf(fmt_str: &char, ...)
+    def printf(fmt_str: !char, ...)
 }
 
-def increment(i: &int) {
+def increment(i: !int) {
     // TODO: Operator-Assign
     *i = *i + 1
 }
 
 def main() {
     let a = 41
+    let b = &a
 
-    increment(&a)
+    increment(!a)
+    // The following line won't compile because `b` is an immutable reference to `a`
+    // *b = 10
 
-    printf("%i\n", a)
+    
+    printf(
+        "%i == %i == %i\n", 
+        a,  // arguments are passed by value
+        *b, // we can still dereference `*b` to access an immutable version of the pointee
+        *&a // dereferencing a reference to `a`
+    )
 }

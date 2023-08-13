@@ -137,6 +137,13 @@ pub enum AnalysisError {
     },
     ResourceShadowing {
         path: Vec<String>
+    },
+    WriteOnImmutableReference,
+    MutRefOfImmutableValue {
+        value: Expression
+    },
+    ImmutableValueAsMutableArgument {
+        value: Expression
     }
 }
 
@@ -182,6 +189,7 @@ pub enum UnaryOperator {
     Plus,
     Minus,
     Ref,
+    MutRef,
     Deref,
 }
 
@@ -196,6 +204,7 @@ impl Display for UnaryOperator {
                 Plus => "+",
                 Minus => "-",
                 Ref => "&",
+                MutRef => "!",
                 Deref => "*",
             }
         )
@@ -210,11 +219,20 @@ pub enum Type {
     //     base: Box<Type>,
     //     size: String
     // },
-    Reference(Box<Type>),
+    Reference{
+        inner: Box<Type>,
+        mutable: bool
+    },
     // Function {
     //     return_type: Box<Type>,
     //     arguments: Vec<Type>
     // }
+}
+
+impl Type {
+    fn mutability_hint(&self) -> bool {
+        !matches!(self, Type::Reference { inner: _, mutable: false })
+    }
 }
 
 impl Display for Type {
@@ -223,7 +241,8 @@ impl Display for Type {
             Self::Void => write!(f, "void"),
             Self::Path(name) => write!(f, "{}", name.join(".")),
             // Self::Array { base, size } => write!(f, "{}[{}]", base, size),
-            Self::Reference(inner) => write!(f, "&{}", inner),
+            Self::Reference{inner, mutable: false} => write!(f, "&{}", inner),
+            Self::Reference{inner, mutable: true}  => write!(f, "!{}", inner),
             // Self::Function { return_type, arguments } => {
             //     write!(f, "def(")?;
             //     write!(f, "{}", arguments.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "))?;
@@ -268,15 +287,19 @@ pub enum ExpressionData {
 pub struct Expression {
     pub data: ExpressionData,
     pub type_: Type,
+    pub mutable: bool,
 }
 
 impl Expression {
     fn type_lhs(&self, scope: &FunctionScope, module: &ModuleScope) -> Result<Type, AnalysisError> {
         match &self.data {
-            ExpressionData::Variable(name) => Ok(match scope.get_variable(module, name)? {
-                VariableOrAttribute::Attribute(expr) => expr.type_,
-                VariableOrAttribute::Variable(ty) => ty,
-            }),
+            ExpressionData::Variable(name) => match scope.get_variable(module, name)? {
+                VariableOrAttribute::Attribute(expr) => Ok(expr.type_),
+                VariableOrAttribute::Variable(Variable { type_, mutable }) => match mutable {
+                    true => Ok(type_),
+                    false => Err(AnalysisError::WriteOnImmutableReference)
+                },
+            },
             ExpressionData::StructMember { instance, member } => {
                 let instance_type = module.get_type(match &instance.type_ {
                     Type::Path(path) => path,
@@ -379,8 +402,14 @@ pub(crate) enum Statement {
     Import(String),
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct Variable {
+    type_: Type,
+    mutable: bool,
+}
+
 pub(crate) enum VariableOrAttribute {
-    Variable(Type),
+    Variable(Variable),
     Attribute(Expression),
 }
 
@@ -389,7 +418,7 @@ pub struct FunctionScope {
     pub(crate) head: FunctionHead,
     pub(crate) source: Vec<ast::Statement>,
     pub(crate) statements: Vec<Statement>,
-    pub(crate) variables: HashMap<String, Type>,
+    pub(crate) variables: HashMap<String, Variable>,
 }
 
 impl FunctionScope {
@@ -407,11 +436,12 @@ impl FunctionScope {
         path: &Vec<String>,
     ) -> Result<VariableOrAttribute, AnalysisError> {
         match self.variables.get(&path[0]) {
-            Some(ty) if path.len() == 1 => return Ok(VariableOrAttribute::Variable(ty.clone())),
-            Some(ty) => Ok(VariableOrAttribute::Attribute(module.get_struct_member(
+            Some(var) if path.len() == 1 => return Ok(VariableOrAttribute::Variable(var.clone())),
+            Some(Variable { type_, mutable }) => Ok(VariableOrAttribute::Attribute(module.get_struct_member(
                 Expression {
                     data: ExpressionData::Variable(vec![path[0].clone()]),
-                    type_: ty.clone(),
+                    type_: type_.clone(),
+                    mutable: *mutable
                 },
                 &path[1..],
             )?)),
@@ -438,18 +468,21 @@ impl FunctionScope {
     ) -> Result<Statement, AnalysisError> {
         use ast::Statement::*;
         match stmt {
-            Expression(expr) => Ok(Statement::Expression(self.type_expression(module, expr)?)),
+            Expression(expr) => Ok(Statement::Expression(self.type_expression(module, expr, false)?)),
             LetAssignment { name, value } => {
-                let rhs = self.type_expression(module, value)?;
-                self.variables.insert(name.clone(), rhs.type_.clone());
+                let rhs = self.type_expression(module, value, true)?;
+                self.variables.insert(name.clone(), Variable {
+                    type_: rhs.type_.clone(),
+                    mutable: rhs.type_.mutability_hint()
+                });
                 Ok(Statement::LetAssignment {
                     name: name,
                     value: rhs,
                 })
             }
             Assignment { lhs, rhs } => {
-                let rhs = self.type_expression(module, rhs)?;
-                let lhs = self.type_expression(module, lhs)?;
+                let rhs = self.type_expression(module, rhs, false)?;
+                let lhs = self.type_expression(module, lhs, true)?;
                 let lhs_ty = lhs.type_lhs(self, module)?;
 
                 // TODO: coherce types
@@ -469,7 +502,7 @@ impl FunctionScope {
                 let mut typed_conditions_and_bodies = vec![];
                 for (condition, body) in conditions_and_bodies {
                     // TODO: invalidate variables that may not exist (let var = ... in if block)
-                    let typed_condition = self.type_expression(module, condition)?;
+                    let typed_condition = self.type_expression(module, condition, false)?;
 
                     if typed_condition.type_ != type_!(bool) {
                         return Err(AnalysisError::UnexpectedType {
@@ -504,7 +537,7 @@ impl FunctionScope {
                 }
             }
             While { condition, body } => {
-                let condition = self.type_expression(module, condition)?;
+                let condition = self.type_expression(module, condition, false)?;
                 if condition.type_ != type_!(bool) {
                     return Err(AnalysisError::UnexpectedType {
                         expected: type_!(bool),
@@ -525,7 +558,7 @@ impl FunctionScope {
             Return(expr) => {
                 let expr = match expr {
                     Some(expr) => {
-                        let typed = self.type_expression(module, expr)?;
+                        let typed = self.type_expression(module, expr, false)?;
                         if self.head.return_type != typed.type_ {
                             return Err(AnalysisError::UnexpectedType {
                                 expected: self.head.return_type.clone(),
@@ -559,13 +592,11 @@ impl FunctionScope {
     }
 
     fn new(source: Vec<ast::Statement>, head: FunctionHead) -> Self {
-        let mut variables = HashMap::new();
-
-        variables.extend(
+        let variables = HashMap::from_iter(
             head.arguments
-                .iter()
-                .cloned()
-                .map(|(name, type_)| (name.clone(), type_)),
+            .iter()
+            .cloned()
+            .map(|(name, type_)| (name.clone(), Variable { mutable: type_.mutability_hint(), type_ }))
         );
 
         FunctionScope {
@@ -580,6 +611,7 @@ impl FunctionScope {
         &self,
         module: &ModuleScope,
         expr: ast::Expression,
+        maybe_mutable: bool
     ) -> Result<Expression, AnalysisError> {
         match expr {
             ast::Expression::Binary {
@@ -587,8 +619,8 @@ impl FunctionScope {
                 operator,
                 right,
             } => {
-                let left = self.type_expression(module, *left)?;
-                let right = self.type_expression(module, *right)?;
+                let left = self.type_expression(module, *left, maybe_mutable)?;
+                let right = self.type_expression(module, *right, maybe_mutable)?;
 
                 use crate::lexer::TokenData;
                 let operator = match operator {
@@ -619,6 +651,7 @@ impl FunctionScope {
                                         right: Box::new(right),
                                     },
                                     type_: type_.clone(),
+                                    mutable: maybe_mutable && type_.mutability_hint()
                                 },
                                 None => match rtypedef.apply_binary(operator, left.type_.clone()) {
                                     Some(type_) => Expression {
@@ -628,6 +661,7 @@ impl FunctionScope {
                                             right: Box::new(right),
                                         },
                                         type_: type_.clone(),
+                                        mutable: maybe_mutable && type_.mutability_hint()
                                     },
                                     None => {
                                         return Err(AnalysisError::UnsupportedBinaryOperation {
@@ -648,7 +682,7 @@ impl FunctionScope {
                 }
             }
             ast::Expression::Unary { operator, argument } => {
-                let argument = self.type_expression(module, *argument)?;
+                let argument = self.type_expression(module, *argument, true)?;
 
                 use crate::lexer::TokenData;
                 let operator = match operator {
@@ -656,6 +690,7 @@ impl FunctionScope {
                     TokenData::Minus => UnaryOperator::Minus,
                     TokenData::Not => UnaryOperator::Not,
                     TokenData::Ref => UnaryOperator::Ref,
+                    TokenData::MutRef => UnaryOperator::MutRef,
                     TokenData::Star => UnaryOperator::Deref,
                     other => return Err(AnalysisError::UnknownUnaryOperator(other)),
                 };
@@ -666,8 +701,29 @@ impl FunctionScope {
                             operator: UnaryOperator::Ref,
                             argument: Box::new(argument),
                         },
-                        type_: Type::Reference(Box::new(arg_type)),
+                        type_: Type::Reference {
+                            inner: Box::new(arg_type),
+                            mutable: false,
+                        },
+                        mutable: false
                     }),
+                    (arg_type, UnaryOperator::MutRef) => {
+                        if !argument.mutable {
+                            return Err(AnalysisError::MutRefOfImmutableValue { value: argument })
+                        }
+
+                        Ok(Expression {
+                            data: ExpressionData::Unary {
+                                operator: UnaryOperator::Ref,
+                                argument: Box::new(argument),
+                            },
+                            type_: Type::Reference {
+                                inner: Box::new(arg_type),
+                                mutable: maybe_mutable,
+                            },
+                            mutable: maybe_mutable
+                        })
+                    },
                     (Type::Path(path), _) => {
                         let arg_type = module.get_type(&path)?;
                         match arg_type.apply_unary(operator) {
@@ -677,6 +733,7 @@ impl FunctionScope {
                                     argument: Box::new(argument),
                                 },
                                 type_: ty.clone(),
+                                mutable: maybe_mutable
                             }),
                             None => Err(AnalysisError::UnsupportedUnaryOperation {
                                 op: operator,
@@ -684,12 +741,13 @@ impl FunctionScope {
                             }),
                         }
                     }
-                    (Type::Reference(inner), UnaryOperator::Deref) => Ok(Expression {
+                    (Type::Reference{inner, mutable}, UnaryOperator::Deref) => Ok(Expression {
                         data: ExpressionData::Unary {
                             operator: UnaryOperator::Deref,
                             argument: Box::new(argument),
                         },
                         type_: *inner,
+                        mutable: maybe_mutable && mutable,
                     }),
                     (argument, op) => {
                         Err(AnalysisError::UnsupportedUnaryOperation { op, argument })
@@ -697,9 +755,10 @@ impl FunctionScope {
                 }
             }
             ast::Expression::ParenBlock(inner) => {
-                let inner = self.type_expression(module, *inner)?;
+                let inner = self.type_expression(module, *inner, maybe_mutable)?;
                 let type_ = inner.type_.clone();
                 Ok(Expression {
+                    mutable: inner.mutable,
                     data: ExpressionData::ParenBlock(Box::new(inner)),
                     type_,
                 })
@@ -721,11 +780,18 @@ impl FunctionScope {
                     }
 
                     for (index, found) in arguments.into_iter().enumerate() {
-                        let found = self.type_expression(module, found)?;
+                        let found = self.type_expression(module, found, true)?;
 
                         match function.arguments.get(index) {
                             Some(expected) => {
+                                // TODO: ownership
+                                let should_be_mutable = expected.1.mutability_hint();
+
                                 if expected.1 == found.type_ {
+                                    if should_be_mutable && !found.mutable {
+                                        return Err(AnalysisError::ImmutableValueAsMutableArgument { value: found })
+                                    }
+
                                     typed_args.push(found)
                                 } else {
                                     return Err(AnalysisError::WrongArgumentType {
@@ -748,8 +814,15 @@ impl FunctionScope {
                     }
 
                     for (expected, found) in std::iter::zip(function.arguments.iter(), arguments) {
-                        let found = self.type_expression(module, found)?;
+                        // TODO: ownership
+                        let should_be_mutable = expected.1.mutability_hint();
+
+                        let found = self.type_expression(module, found, should_be_mutable)?;
                         if expected.1 == found.type_ {
+                            if should_be_mutable && !found.mutable {
+                                return Err(AnalysisError::ImmutableValueAsMutableArgument { value: found })
+                            }
+
                             typed_args.push(found)
                         } else {
                             return Err(AnalysisError::WrongArgumentType {
@@ -767,17 +840,19 @@ impl FunctionScope {
                         arguments: typed_args,
                     },
                     type_: function.return_type.clone(),
+                    mutable: maybe_mutable && function.return_type.mutability_hint()
                 })
             }
             ast::Expression::Variable(name) => Ok(match self.get_variable(module, &name)? {
-                VariableOrAttribute::Variable(var_type) => Expression {
+                VariableOrAttribute::Variable(var) => Expression {
                     data: ExpressionData::Variable(name),
-                    type_: var_type,
+                    type_: var.type_,
+                    mutable: maybe_mutable && var.mutable
                 },
                 VariableOrAttribute::Attribute(expr) => expr,
             }),
             ast::Expression::StructMember { instance, member } => {
-                let instance = self.type_expression(module, *instance)?;
+                let instance = self.type_expression(module, *instance, maybe_mutable)?;
 
                 match instance.type_.clone() {
                     Type::Path(path) => match module.get_type(&path)?.kind.clone() {
@@ -792,6 +867,7 @@ impl FunctionScope {
                                 .clone();
 
                             Ok(Expression {
+                                mutable: instance.mutable,
                                 data: ExpressionData::StructMember {
                                     instance: Box::new(instance),
                                     member,
@@ -823,7 +899,9 @@ impl FunctionScope {
                                     missing: m_name.clone(),
                                 })?
                                 .clone();
-                            let value = self.type_expression(module, value)?;
+
+                            // TODO: ownership
+                            let value = self.type_expression(module, value, maybe_mutable)?;
 
                             if value.type_ != m_type {
                                 return Err(AnalysisError::UnexpectedType {
@@ -850,6 +928,7 @@ impl FunctionScope {
                                 members: typed_members,
                             },
                             type_: Type::Path(ty.path.clone()),
+                            mutable: true
                         })
                     }
                     _ => Err(AnalysisError::NonStructInit {
@@ -867,7 +946,7 @@ pub(crate) enum ResourceKind {
     Function(FunctionHead),
     Type(TypeDefinition),
     #[allow(dead_code)] 
-    Variable(Type),
+    Variable(Variable),
     Module(ModuleScope),
     Alias(Vec<String>)
 }
@@ -1201,6 +1280,7 @@ impl ModuleScope {
             TypeKind::Struct { members } => match members.get(&path[0]) {
                 Some(member) => {
                     let instance = Expression {
+                        mutable: instance.mutable,
                         data: ExpressionData::StructMember {
                             instance: Box::new(instance),
                             member: path[0].clone(),
@@ -1354,7 +1434,10 @@ impl ModuleScope {
         match ty {
             ast::Type::Void => Type::Void,
             ast::Type::Path(path) => Type::Path(self.make_path_absolute(path)),
-            ast::Type::Reference(inner) => Type::Reference(Box::new(self.analyse_new_type(*inner))),
+            ast::Type::Reference{inner, mutable} => Type::Reference{
+                inner: Box::new(self.analyse_new_type(*inner)),
+                mutable
+            },
             // Type::Array { base, size } => Type::Array { base: Box::new(self.analyse_new_type(*base)), size },
             // Type::Function { return_type, arguments } => {
             //     let return_type = match *return_type {
@@ -1375,7 +1458,10 @@ impl ModuleScope {
             ast::Type::Path(name) => {
                 Type::Path(self.make_path_absolute(self.get_type(&name).map(|_| name)?))
             }
-            ast::Type::Reference(inner) => Type::Reference(Box::new(self.analyse_type(*inner)?)),
+            ast::Type::Reference { inner, mutable } => Type::Reference {
+                inner: Box::new(self.analyse_type(*inner)?),
+                mutable: mutable
+            },
         })
     }
 
@@ -1391,7 +1477,7 @@ impl ModuleScope {
 
     fn type_literal(&self, value: Literal) -> Result<Expression, AnalysisError> {
         let type_ = match &value {
-            Literal::String(_) => type_!(&char),
+            Literal::String(_) => type_!(!char),
             Literal::Integer {
                 value: _,
                 signed,
@@ -1458,6 +1544,7 @@ impl ModuleScope {
         Ok(Expression {
             data: ExpressionData::Literal(value),
             type_,
+            mutable: true
         })
     }
 

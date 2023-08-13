@@ -82,7 +82,16 @@ macro_rules! type_ {
         Type::Path(vec![stringify!($first).to_string()])
     };
     (& $tok:tt) => {
-        Type::Reference(Box::new(type_!($tok)))
+        Type::Reference {
+            inner: Box::new(type_!($tok)),
+            mutable: false
+        }
+    };
+    (! $tok:tt) => {
+        Type::Reference {
+            inner: Box::new(type_!($tok)),
+            mutable: true
+        }
     };
 }
 

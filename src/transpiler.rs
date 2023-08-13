@@ -295,9 +295,9 @@ impl<'a> ModuleTranspiler<'a> {
         match type_ {
             Type::Void => format!("void {variable}",),
             Type::Path(path) => format!("{} {variable}", self.transpile_type(path)),
-            Type::Reference(inner) => {
+            Type::Reference { inner, mutable: _ } => {
                 match *inner {
-                    Type::Void | Type::Path(_) | Type::Reference(_) => {
+                    Type::Void | Type::Path(_) | Type::Reference{..} => {
                         self.transpile_declaration(*inner, format!("*{variable}"))
                     }
                     // _ => self.transpile_declaration(*inner, format!("(*{variable})"))

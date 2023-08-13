@@ -20,6 +20,7 @@ pub enum TokenData {
     Star,
     Slash,
     Ref,
+    MutRef,
     Arrow,
 
     // assignments
@@ -89,6 +90,7 @@ impl Display for TokenData {
                 Star => "*",
                 Slash => "/",
                 Ref => "&",
+                MutRef => "!",
                 Assign => "=",
                 Equal => "==",
                 NotEqual => "!=",
@@ -448,15 +450,7 @@ impl<'a> Iterator for Lexer<'a> {
                 },
                 '&' => self.token(Ref),
                 '=' => two_char_token!('=', self.token(Assign), self.token(Equal)),
-                '!' => two_char_token!(
-                    '=',
-                    {
-                        self.syntax_error(LexingError::MisplacedCharacter('!'));
-                        self.token(Unknown("!".to_string()))
-                        // self.next()?
-                    },
-                    self.token(NotEqual)
-                ),
+                '!' => two_char_token!('=', self.token(MutRef), self.token(NotEqual)),
                 '>' => two_char_token!('=', self.token(Greater), self.token(GreatorOrEqual)),
                 '<' => two_char_token!('=', self.token(Lesser), self.token(LesserOrEqual)),
                 '"' => match self.string() {

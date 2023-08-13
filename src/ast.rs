@@ -55,7 +55,10 @@ pub enum Type {
     //     base: Box<Type>,
     //     size: String
     // },
-    Reference(Box<Type>),
+    Reference {
+        inner: Box<Type>,
+        mutable: bool
+    },
     // Function {
     //     return_type: Box<Option<Type>>,
     //     arguments: Vec<Type>
