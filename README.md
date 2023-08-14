@@ -33,7 +33,7 @@ To compile and run a program, simply pass it as the first argument to the compil
 cargo run -- <program.chi>
 ```
 The generated C code and the compiled executable should be located in the `generated/` folder in the current directory.
-Executable generation is only supported on Linux (and perhaps MacOS, untested), though Chi generates a Makefile with the C code in all cases.
+Executable generation is only supported on Linux (and perhaps MacOS, untested), though Chi generates a single C file, so manual compilation shouldn't be a problem.
 
 ### Tests
 `cargo test` compiles and runs every examples in the `examples/` folder and check if any of them failed to compile or run.

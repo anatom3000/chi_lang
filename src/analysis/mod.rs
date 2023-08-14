@@ -485,7 +485,7 @@ impl FunctionScope {
                 let lhs = self.type_expression(module, lhs, true)?;
                 let lhs_ty = lhs.type_lhs(self, module)?;
 
-                // TODO: coherce types
+                // TODO: type coercion
                 if lhs_ty != rhs.type_ {
                     return Err(AnalysisError::UnexpectedType {
                         expected: lhs_ty.clone(),
@@ -504,6 +504,7 @@ impl FunctionScope {
                     // TODO: invalidate variables that may not exist (let var = ... in if block)
                     let typed_condition = self.type_expression(module, condition, false)?;
 
+                    // TODO: type coercion
                     if typed_condition.type_ != type_!(bool) {
                         return Err(AnalysisError::UnexpectedType {
                             expected: type_!(bool),
@@ -538,6 +539,8 @@ impl FunctionScope {
             }
             While { condition, body } => {
                 let condition = self.type_expression(module, condition, false)?;
+
+                // TODO: type coercion
                 if condition.type_ != type_!(bool) {
                     return Err(AnalysisError::UnexpectedType {
                         expected: type_!(bool),
@@ -559,6 +562,7 @@ impl FunctionScope {
                 let expr = match expr {
                     Some(expr) => {
                         let typed = self.type_expression(module, expr, false)?;
+                        // TODO: type coercion
                         if self.head.return_type != typed.type_ {
                             return Err(AnalysisError::UnexpectedType {
                                 expected: self.head.return_type.clone(),
@@ -568,6 +572,7 @@ impl FunctionScope {
                         Some(typed)
                     }
                     None => {
+                        // TODO: type coercion
                         if self.head.return_type != type_!(void) {
                             return Err(AnalysisError::UnexpectedType {
                                 expected: self.head.return_type.clone(),
@@ -902,7 +907,8 @@ impl FunctionScope {
 
                             // TODO: ownership
                             let value = self.type_expression(module, value, maybe_mutable)?;
-
+                            
+                            // TODO: type coercion
                             if value.type_ != m_type {
                                 return Err(AnalysisError::UnexpectedType {
                                     expected: m_type,
@@ -1023,6 +1029,7 @@ impl ModuleScope {
 
                     if name == "main" {
                         // implicitly return int if function is main
+                        // TODO: type coercion
                         if return_type == type_!(void) {
                             return_type = type_!(int);
                         } else if return_type != type_!(int) {
