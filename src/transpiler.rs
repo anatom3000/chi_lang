@@ -294,6 +294,10 @@ impl<'a> ModuleTranspiler<'a> {
     fn transpile_declaration(&mut self, type_: Type, variable: String) -> String {
         match type_ {
             Type::Void => format!("void {variable}",),
+            Type::Path(path) if path[0] == "str" => {
+                // hack until a real string type is implemented
+                format!("char *{variable}")
+            },
             Type::Path(path) => format!("{} {variable}", self.transpile_type(path)),
             Type::Reference { inner, mutable: _ } => {
                 match *inner {

@@ -1,5 +1,5 @@
 extern "<stdio.h>" {
-    def printf(fmt_str: !char, ...)
+    def printf(fmt_str: str, ...)
 }
 
 struct Point {

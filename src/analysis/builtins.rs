@@ -122,7 +122,16 @@ lazy_static! {
         (
             vec!["char".to_string()],
             ResourceKind::Type(TypeDefinition {
-                path: vec!["bool".to_string()],
+                path: vec!["char".to_string()],
+                kind: TypeKind::Primitive,
+                supported_binary_operations: HashMap::new(),
+                supported_unary_operations: HashMap::new()
+            })
+        ),
+        (
+            vec!["str".to_string()],
+            ResourceKind::Type(TypeDefinition {
+                path: vec!["char".to_string()],
                 kind: TypeKind::Primitive,
                 supported_binary_operations: HashMap::new(),
                 supported_unary_operations: HashMap::new()

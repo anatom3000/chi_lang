@@ -1,5 +1,5 @@
 extern "<stdio.h>" {
-    def printf(fmt_str: !char, ...)
+    def printf(fmt_str: str, ...)
 }
 
 def increment(i: !int) {
@@ -7,19 +7,38 @@ def increment(i: !int) {
     *i = *i + 1
 }
 
-def main() {
-    let a = 41
-    let b = &a
+def print_thing(i: &int) {
+    printf("I can't modify my reference! %i\n", *i)
 
-    increment(!a)
+    // won't compile:
+    // *i = 0
+
+}
+
+def main() {
+    let a = 40 // the integer value "40"
+    
+    let ref_to_a = &a // an immutable reference to `a`
+    let mutable_ref_to_a = !a // a mutable reference to `a`
+
+    // There is no concept of "borrowing", references are just pointers with extra mutability guarantees.
+    // See how we can get multiple mutable references to the same data! (don't tell the Rust people)
+    let another_mutable_ref_to_a = !a
+
     // The following line won't compile because `b` is an immutable reference to `a`
     // *b = 10
 
+    // Variables can be implicitly referenced.
+    print_thing(a) // same as `print_thing(&a)`
+
+    // Mutable references must be explicit to prevent "magic" mutations.
+    increment(!a)
+    increment(mutable_ref_to_a)
     
     printf(
-        "%i == %i == %i\n", 
+        "%i, %i and %i\n", 
         a,  // arguments are passed by value
-        *b, // we can still dereference `*b` to access an immutable version of the pointee
+        *ref_to_a, // we can still dereference `*b` to access an immutable version of the data
         *&a // dereferencing a reference to `a`
     )
 }

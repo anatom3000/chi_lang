@@ -43,7 +43,7 @@ Executable generation is only supported on Linux (and perhaps MacOS, untested), 
 
 #### MVP
 - [x] Immutable/Mutable References `&x`/`!x`
-- [ ] Auto (de)referencing
+- [x] Auto (de)referencing
 - [ ] Struct methods
 - [ ] Enums
 - [ ] Generics

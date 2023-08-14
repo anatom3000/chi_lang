@@ -80,11 +80,6 @@ pub enum AnalysisError {
         expected: usize,
         found: usize,
     },
-    WrongArgumentType {
-        function: Vec<String>,
-        expected: Type,
-        found: Type,
-    },
     UnexpectedType {
         expected: Type,
         found: Type,
@@ -142,9 +137,10 @@ pub enum AnalysisError {
     MutRefOfImmutableValue {
         value: Expression
     },
-    ImmutableValueAsMutableArgument {
+    ExpectedMutableValue {
         value: Expression
-    }
+    },
+    EmptyReturn
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -211,7 +207,7 @@ impl Display for UnaryOperator {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Type {
     Void,
     Path(Vec<String>),
@@ -233,6 +229,15 @@ impl Type {
     fn mutability_hint(&self) -> bool {
         !matches!(self, Type::Reference { inner: _, mutable: false })
     }
+    
+    fn can_coerce_to(&self, expected: &Type) -> bool {
+        match (expected, self) {
+            (expected, found) if expected == found => true,
+            (Type::Reference { inner: expected_inner, mutable: false }, Type::Reference { inner: found_inner, mutable: true }) 
+                => found_inner.can_coerce_to(expected_inner),
+            _ => false,
+        }
+    }
 }
 
 impl Display for Type {
@@ -252,6 +257,12 @@ impl Display for Type {
             //     }
             // }
         }
+    }
+}
+
+impl std::fmt::Debug for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self}")
     }
 }
 
@@ -339,6 +350,30 @@ impl Expression {
             }),
         }
     }
+
+    fn coerce_to(self, expected: &Type, mutable: bool) -> Result<Expression, AnalysisError> {
+        if mutable && !self.mutable {
+            return Err(AnalysisError::ExpectedMutableValue { value: self })
+        }
+        
+        if self.type_.can_coerce_to(expected) {
+            return Ok(self)
+        }
+
+        match (self.type_.clone(), expected) {
+            (found, Type::Reference { inner, mutable: false }) => {
+                let new = self.coerce_to(inner, mutable)?;
+                Ok(Expression {
+                    data: ExpressionData::Unary { operator: UnaryOperator::Ref, argument: Box::new(new) },
+                    mutable: false,
+                    type_: Type::Reference { inner: Box::new(found), mutable: false }
+                })
+            }
+
+            (found, expected) => Err(AnalysisError::UnexpectedType { expected: expected.clone(), found }),
+        }
+    }
+
 }
 
 #[derive(Clone, Debug)]
@@ -466,10 +501,9 @@ impl FunctionScope {
         module: &ModuleScope,
         stmt: ast::Statement,
     ) -> Result<Statement, AnalysisError> {
-        use ast::Statement::*;
         match stmt {
-            Expression(expr) => Ok(Statement::Expression(self.type_expression(module, expr, false)?)),
-            LetAssignment { name, value } => {
+            ast::Statement::Expression(expr) => Ok(Statement::Expression(self.type_expression(module, expr, false)?)),
+            ast::Statement::LetAssignment { name, value } => {
                 let rhs = self.type_expression(module, value, true)?;
                 self.variables.insert(name.clone(), Variable {
                     type_: rhs.type_.clone(),
@@ -480,37 +514,24 @@ impl FunctionScope {
                     value: rhs,
                 })
             }
-            Assignment { lhs, rhs } => {
-                let rhs = self.type_expression(module, rhs, false)?;
+            ast::Statement::Assignment { lhs, rhs } => {
                 let lhs = self.type_expression(module, lhs, true)?;
                 let lhs_ty = lhs.type_lhs(self, module)?;
 
-                // TODO: type coercion
-                if lhs_ty != rhs.type_ {
-                    return Err(AnalysisError::UnexpectedType {
-                        expected: lhs_ty.clone(),
-                        found: rhs.type_,
-                    });
-                }
+                let rhs = self.type_expression(module, rhs, false)?
+                    .coerce_to(&lhs_ty, false)?;
 
                 Ok(Statement::Assignment { lhs, rhs })
             }
-            If {
+            ast::Statement::If {
                 conditions_and_bodies,
                 else_body,
             } => {
                 let mut typed_conditions_and_bodies = vec![];
                 for (condition, body) in conditions_and_bodies {
                     // TODO: invalidate variables that may not exist (let var = ... in if block)
-                    let typed_condition = self.type_expression(module, condition, false)?;
-
-                    // TODO: type coercion
-                    if typed_condition.type_ != type_!(bool) {
-                        return Err(AnalysisError::UnexpectedType {
-                            expected: type_!(bool),
-                            found: typed_condition.type_,
-                        });
-                    }
+                    let typed_condition = self.type_expression(module, condition, false)?
+                        .coerce_to(&type_!(bool), false)?;
 
                     let mut inner = vec![];
                     for stmt in body {
@@ -537,16 +558,9 @@ impl FunctionScope {
                     }),
                 }
             }
-            While { condition, body } => {
-                let condition = self.type_expression(module, condition, false)?;
-
-                // TODO: type coercion
-                if condition.type_ != type_!(bool) {
-                    return Err(AnalysisError::UnexpectedType {
-                        expected: type_!(bool),
-                        found: condition.type_,
-                    });
-                }
+            ast::Statement::While { condition, body } => {
+                let condition = self.type_expression(module, condition, false)?
+                    .coerce_to(&type_!(bool), false)?;
 
                 let mut inner = vec![];
                 for stmt in body {
@@ -558,38 +572,30 @@ impl FunctionScope {
                     body: inner,
                 })
             }
-            Return(expr) => {
+            ast::Statement::Return(expr) => {
                 let expr = match expr {
                     Some(expr) => {
-                        let typed = self.type_expression(module, expr, false)?;
-                        // TODO: type coercion
-                        if self.head.return_type != typed.type_ {
-                            return Err(AnalysisError::UnexpectedType {
-                                expected: self.head.return_type.clone(),
-                                found: typed.type_,
-                            });
-                        }
-                        Some(typed)
+                        Some(
+                            self.type_expression(module, expr, false)?
+                                .coerce_to(&self.head.return_type, false)?
+                        )
                     }
                     None => {
-                        // TODO: type coercion
                         if self.head.return_type != type_!(void) {
-                            return Err(AnalysisError::UnexpectedType {
-                                expected: self.head.return_type.clone(),
-                                found: type_!(void),
-                            });
+                            return Err(AnalysisError::EmptyReturn)
                         }
+                        
                         None
                     }
                 };
 
                 Ok(Statement::Return(expr))
             }
-            other @ (FunctionDeclaration { .. }
-            | ExternFunctionDeclaration { .. }
-            | ExternBlock { .. }
-            | StructDeclaration { .. }
-            | Import(_)) => Err(AnalysisError::StatementInWrongContext {
+            other @ (ast::Statement::FunctionDeclaration { .. }
+            | ast::Statement::ExternFunctionDeclaration { .. }
+            | ast::Statement::ExternBlock { .. }
+            | ast::Statement::StructDeclaration { .. }
+            | ast::Statement::Import(_)) => Err(AnalysisError::StatementInWrongContext {
                 statement: other,
                 found_context: "function body",
             }),
@@ -792,19 +798,9 @@ impl FunctionScope {
                                 // TODO: ownership
                                 let should_be_mutable = expected.1.mutability_hint();
 
-                                if expected.1 == found.type_ {
-                                    if should_be_mutable && !found.mutable {
-                                        return Err(AnalysisError::ImmutableValueAsMutableArgument { value: found })
-                                    }
+                                let found = found.coerce_to(&expected.1, should_be_mutable)?;
 
-                                    typed_args.push(found)
-                                } else {
-                                    return Err(AnalysisError::WrongArgumentType {
-                                        function: function_name,
-                                        expected: expected.1.clone(),
-                                        found: found.type_,
-                                    });
-                                }
+                                typed_args.push(found)
                             }
                             None => typed_args.push(found),
                         }
@@ -822,20 +818,10 @@ impl FunctionScope {
                         // TODO: ownership
                         let should_be_mutable = expected.1.mutability_hint();
 
-                        let found = self.type_expression(module, found, should_be_mutable)?;
-                        if expected.1 == found.type_ {
-                            if should_be_mutable && !found.mutable {
-                                return Err(AnalysisError::ImmutableValueAsMutableArgument { value: found })
-                            }
-
-                            typed_args.push(found)
-                        } else {
-                            return Err(AnalysisError::WrongArgumentType {
-                                function: function_name,
-                                expected: expected.1.clone(),
-                                found: found.type_,
-                            });
-                        }
+                        typed_args.push(
+                            self.type_expression(module, found, should_be_mutable)?
+                                .coerce_to(&expected.1, should_be_mutable)?
+                        )
                     }
                 }
 
@@ -906,19 +892,13 @@ impl FunctionScope {
                                 .clone();
 
                             // TODO: ownership
-                            let value = self.type_expression(module, value, maybe_mutable)?;
-                            
-                            // TODO: type coercion
-                            if value.type_ != m_type {
-                                return Err(AnalysisError::UnexpectedType {
-                                    expected: m_type,
-                                    found: value.type_,
-                                });
-                            }
-
                             members.remove(&m_name);
 
-                            typed_members.insert(m_name, value);
+                            typed_members.insert(
+                                m_name, 
+                                self.type_expression(module, value, maybe_mutable)?
+                                    .coerce_to(&m_type, maybe_mutable)?
+                            );
                         }
 
                         if !members.is_empty() {
@@ -945,6 +925,8 @@ impl FunctionScope {
             ast::Expression::Literal(lit) => module.type_literal(lit),
         }
     }
+
+    
 }
 
 #[derive(Debug, Clone)]
@@ -1029,15 +1011,17 @@ impl ModuleScope {
 
                     if name == "main" {
                         // implicitly return int if function is main
-                        // TODO: type coercion
                         if return_type == type_!(void) {
                             return_type = type_!(int);
-                        } else if return_type != type_!(int) {
+                        }
+                        
+                        if return_type != type_!(int) {
                             return Err(AnalysisError::UnexpectedType {
                                 expected: type_!(int),
                                 found: return_type,
                             });
                         }
+                        
                     }
 
                     let mut path = vec![name.clone()];
@@ -1484,7 +1468,7 @@ impl ModuleScope {
 
     fn type_literal(&self, value: Literal) -> Result<Expression, AnalysisError> {
         let type_ = match &value {
-            Literal::String(_) => type_!(!char),
+            Literal::String(_) => type_!(str),
             Literal::Integer {
                 value: _,
                 signed,

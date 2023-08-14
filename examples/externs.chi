@@ -3,7 +3,7 @@ extern "<stdio.h>" {
     // Extern functions are brought into the current namespace as if they were defined as regaular functions.
     // "..." at the end of the argument list means that the extern function is variadic:
     // Here, Chi's type checker will accept any number of arguments of any type after `fmt_str`.
-    def printf(fmt_str: !char, ...)
+    def printf(fmt_str: str, ...)
 }
 
 // import other C libraries too!

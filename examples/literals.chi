@@ -13,7 +13,7 @@ def main() {
     let pi_but_more_precise = 3.14f128 // type: float128
 
     // string
-    let message = "Hello, Chi!" // type: !char (arrays are not implemented yet)
+    let message = "Hello, Chi!" // type: str (arrays are not implemented yet)
 
     // bool
     let the_truth = true    // type: bool
