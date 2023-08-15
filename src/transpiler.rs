@@ -64,7 +64,7 @@ impl<'a> ModuleTranspiler<'a> {
                     }
     
                     // don't "namespacify" the function name if function is the main function or an extern function
-                    let func_name = new.transpile_path(&func.head.path);
+                    let func_name = new.transpile_path(&new.scope.make_path_absolute(vec![name.clone()]).expect("referenced path exists"));
                     let declaration = new
                         .transpile_declaration(func.head.return_type, format!("{func_name}({args})"));
 
@@ -232,7 +232,6 @@ impl<'a> ModuleTranspiler<'a> {
                 function,
                 arguments,
             } => {
-
                 let head = match self.scope.get_resource_no_vis(&function) {
                     Ok(ResourceKind::Function(func)) => func,
                     _ => unreachable!("called function exists"),
@@ -240,7 +239,7 @@ impl<'a> ModuleTranspiler<'a> {
                 let function = if head.is_variadic.is_some() {
                     function.last().expect("path is not empty").clone()
                 } else {
-                    self.transpile_path(&head.path)
+                    self.transpile_path(&function)
                 };
                 let args = arguments
                     .into_iter()

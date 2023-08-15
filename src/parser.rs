@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::vec;
 
-use crate::ast::{self, Expression, Import, Literal, Statement, Type};
+use crate::ast::{self, Expression, Import, Literal, Statement, Type, FunctionKind};
 use crate::lexer::{self, Token, TokenData};
 
 #[derive(Debug, Clone)]
@@ -22,6 +22,16 @@ pub enum ParserError {
         help: &'static str,
         found: Option<Token>,
     },
+}
+
+macro_rules! expected {
+    ($self:ident, $thing:expr) => {{
+        $self.errors.push(ParserError::Expected {
+            rule: $thing,
+            found: $self.full_current_token(),
+        });
+        return None
+    }};
 }
 
 impl Display for ParserError {
@@ -159,13 +169,7 @@ impl Parser {
                     argument: Box::new(self.unary()?),
                 });
             }
-            None => {
-                self.errors.push(ParserError::Expected {
-                    rule: "unary",
-                    found: None,
-                });
-                return None;
-            }
+            None => expected!(self, "unary"),
             _ => {}
         }
 
@@ -174,13 +178,6 @@ impl Parser {
 
     fn primary(&mut self) -> Option<Expression> {
         let mut expr = match self.current_token() {
-            None => {
-                self.errors.push(ParserError::Expected {
-                    rule: "expression",
-                    found: None,
-                });
-                return None;
-            }
             Some(token) => {
                 self.current += 1;
                 match token {
@@ -207,26 +204,14 @@ impl Parser {
                                 self.current += 1;
                                 Expression::ParenBlock(Box::new(expr))
                             }
-                            _ => {
-                                self.errors.push(ParserError::Expected {
-                                    rule: "')' closing expression paren block",
-                                    found: self.full_current_token(),
-                                });
-                                return None;
-                            }
+                            _ => expected!(self, "')' closing expression paren block")
                         }
                     }
-                    _ => {
-                        self.current -= 1;
-                        // token
-                        self.errors.push(ParserError::Expected {
-                            rule: "expression",
-                            found: self.full_current_token(),
-                        });
-                        return None;
-                    }
+                    _ => expected!(self, "expression")
                 }
             }
+            None => expected!(self, "expression")
+
         };
 
         loop {
@@ -241,13 +226,7 @@ impl Parser {
                                 member,
                             }
                         }
-                        _ => {
-                            self.errors.push(ParserError::Expected {
-                                rule: "identifier after `.`",
-                                found: self.full_current_token(),
-                            });
-                            return None;
-                        }
+                        _ => expected!(self, "identifier after `.`")
                     }
                 }
                 _ => break,
@@ -290,31 +269,13 @@ impl Parser {
                                             self.current += 1;
                                             break;
                                         }
-                                        _ => {
-                                            self.errors.push(ParserError::Expected {
-                                                rule: "'}' (end of struct initialization) or ',' (member seperator)",
-                                                found: self.full_current_token(),
-                                            });
-                                            return None;
-                                        }
+                                        _ => expected!(self, "'}' (end of struct initialization) or ',' (member seperator)")
                                     }
                                 }
-                                _ => {
-                                    self.errors.push(ParserError::Expected {
-                                        rule: "`:` after member name in struct initialization",
-                                        found: self.full_current_token(),
-                                    });
-                                    return None;
-                                }
+                                _ => expected!(self, "`:` after member name in struct initialization")
                             }
                         }
-                        _ => {
-                            self.errors.push(ParserError::Expected {
-                                rule: "member name or `}` in struct initialization",
-                                found: self.full_current_token(),
-                            });
-                            return None;
-                        }
+                        _ => expected!(self, "member name or `}` in struct initialization")
                     }
                 }
 
@@ -341,13 +302,7 @@ impl Parser {
                     self.current += 1;
                     return Some(args);
                 }
-                _ => {
-                    self.errors.push(ParserError::Expected {
-                        rule: "')' (end of arguments) or ',' (argument seperator)",
-                        found: self.full_current_token(),
-                    });
-                    return None;
-                }
+                _ => expected!(self, "')' (end of arguments) or ',' (argument seperator)")
             }
         }
     }
@@ -390,13 +345,7 @@ impl Parser {
                     self.current += 1;
                     return Some(args);
                 }
-                _ => {
-                    self.errors.push(ParserError::Expected {
-                        rule: "')' (end of arguments in def type) or ',' (argument seperator in def type)",
-                        found: self.full_current_token(),
-                    });
-                    return None;
-                }
+                _ => expected!(self, "')' (end of arguments in def type) or ',' (argument seperator in def type)")
             }
         }
     }
@@ -426,13 +375,7 @@ impl Parser {
                         self.current += 1;
                         ty
                     }
-                    _ => {
-                        self.errors.push(ParserError::Expected {
-                            rule: "')' closing type paren block",
-                            found: self.full_current_token(),
-                        });
-                        return None;
-                    }
+                    _ => expected!(self, "')' closing type paren block")
                 }
             }
             // Some(TokenData::Def) => {
@@ -452,19 +395,10 @@ impl Parser {
             //                 }
             //             }
             //         },
-            //         _ => {
-            //             self.errors.push(ParserError::Expected { rule: "'(' after 'def' type", found: self.full_current_token() });
-            //             return None
-            //         }
+            //         _ => expected!(self, "'(' after 'def' type")
             //     }
             // },
-            _ => {
-                self.errors.push(ParserError::Expected {
-                    rule: "type",
-                    found: self.full_current_token(),
-                });
-                return None;
-            }
+            _ => expected!(self, "type")
         };
 
         // TODO: implement back array types
@@ -478,20 +412,14 @@ impl Parser {
         //                     self.current += 1;
         //                     ty = Type::Array { base: Box::new(ty), size: value }
         //                 },
-        //                 _ => {
-        //                     self.errors.push(ParserError::Expected { rule: "']' closing array type", found: self.full_current_token() });
-        //                     return None;
-        //                 }
+        //                 _ => expected!(self, "']' closing array type")
         //             }
         //         },
         //         Some(TokenData::RightBracket) => {
         //             self.errors.push(ParserError::ExpectedWithHelp { rule: "integer literal", help: "unsized arrays are not supported (yet)", found: self.full_current_token() });
         //             return None;
         //         },
-        //         _ => {
-        //             self.errors.push(ParserError::Expected { rule: "integer literal", found: self.full_current_token() });
-        //             return None;
-        //         }
+        //         _ => expected!(self, "integer literal")
         //     }
         // }
 
@@ -528,12 +456,7 @@ impl Parser {
                     Some(TokenData::NewLine) => self.current += 1,
                     None => return Some(statements),
                     _ => {
-                        if first {
-                            self.errors.push(ParserError::Expected {
-                                rule: "new line or `;` (module)",
-                                found: self.full_current_token(),
-                            })
-                        } else {
+                        if !first {
                             break 'consume_separator;
                         }
                     }
@@ -583,13 +506,7 @@ impl Parser {
                 let expr = self.expression()?;
                 self.expr_stmt(expr)
             }
-            None => {
-                self.errors.push(ParserError::Expected {
-                    rule: "statement",
-                    found: self.full_current_token(),
-                });
-                None
-            }
+            None => expected!(self, "statement")
         }
     }
 
@@ -614,38 +531,24 @@ impl Parser {
                     value: self.expression()?,
                 });
             } else {
-                self.errors.push(ParserError::Expected {
-                    rule: "'='",
-                    found: self.full_current_token(),
-                })
+                expected!(self, "`=`")
             }
         } else {
-            self.errors.push(ParserError::Expected {
-                rule: "identifier",
-                found: self.full_current_token(),
-            })
+            expected!(self, "identifier")
         }
-
-        None
     }
 
     fn def_stmt(&mut self) -> Option<Statement> {
-        let (name, arguments, return_type, is_variadic) = self.function_head()?;
+        let (kind, arguments, return_type, is_variadic) = self.function_head()?;
 
         match self.current_token() {
             Some(TokenData::LeftBrace) => self.current += 1,
-            _ => {
-                self.errors.push(ParserError::Expected {
-                    rule: "'{' (function body) or '->' (return type)",
-                    found: self.full_current_token(),
-                });
-                return None;
-            }
+            _ => expected!(self, "'{' (function body) or '->' (return type)")
         }
         let body = self.function_body()?;
 
         Some(Statement::FunctionDeclaration {
-            name,
+            kind,
             return_type,
             arguments,
             body,
@@ -654,10 +557,10 @@ impl Parser {
     }
 
     fn extern_def_stmt(&mut self) -> Option<Statement> {
-        let (name, arguments, return_type, is_variadic) = self.function_head()?;
+        let (kind, arguments, return_type, is_variadic) = self.function_head()?;
 
         Some(Statement::ExternFunctionDeclaration {
-            name,
+            kind,
             arguments,
             return_type,
             is_variadic,
@@ -667,26 +570,14 @@ impl Parser {
     fn extern_stmt(&mut self) -> Option<Statement> {
         let source = match self.current_token() {
             Some(TokenData::String(content)) => content,
-            _ => {
-                self.errors.push(ParserError::Expected {
-                    rule: "extern header path",
-                    found: self.full_current_token(),
-                });
-                return None;
-            }
+            _ => expected!(self, "extern header path")
         };
 
         self.current += 1;
 
         match self.current_token_no_whitespace() {
             Some(TokenData::LeftBrace) => self.current += 1,
-            _ => {
-                self.errors.push(ParserError::Expected {
-                    rule: "extern block body",
-                    found: self.full_current_token(),
-                });
-                return None;
-            }
+            _ => expected!(self, "extern block body")
         }
 
         let body = self.extern_body()?;
@@ -704,10 +595,7 @@ impl Parser {
                     self.current += 1;
                     return Some(statements);
                 }
-                None => self.errors.push(ParserError::Expected {
-                    rule: "function declaration or `}` in extern block",
-                    found: None,
-                }),
+                None => expected!(self, "function declaration or `}` in extern block"),
                 _ => break 'consume_separator,
             }
         }
@@ -715,13 +603,7 @@ impl Parser {
         loop {
             match self.current_token() {
                 Some(TokenData::Def) => self.current += 1,
-                _ => {
-                    self.errors.push(ParserError::Expected {
-                        rule: "def statement in extern block",
-                        found: self.full_current_token(),
-                    });
-                    return None;
-                }
+                _ => expected!(self, "def statement in extern block")
             }
 
             statements.push(self.extern_def_stmt()?);
@@ -737,10 +619,7 @@ impl Parser {
                     None => return Some(statements),
                     _ => {
                         if first {
-                            self.errors.push(ParserError::Expected {
-                                rule: "new line",
-                                found: self.full_current_token(),
-                            })
+                            expected!(self, "new line")
                         } else {
                             break 'consume_separator;
                         }
@@ -751,104 +630,107 @@ impl Parser {
         }
     }
 
-    fn function_head(&mut self) -> Option<(String, Vec<(String, Type)>, Type, bool)> {
-        if let Some(TokenData::Identifier(name)) = self.current_token() {
+    fn function_head_end(&mut self, ) -> Option<(Vec<(String, Type)>, Type, bool)> {
+        if let Some(TokenData::LeftParen) = self.current_token() {
             self.current += 1;
-            if let Some(TokenData::LeftParen) = self.current_token() {
-                self.current += 1;
-                let mut args = vec![];
-                let mut is_variadic = false;
-                loop {
-                    match self.current_token() {
-                        Some(TokenData::RightParen) => {
-                            self.current += 1;
-                            break;
-                        }
-                        Some(TokenData::Identifier(arg_name)) => {
-                            self.current += 1;
-                            match self.current_token() {
-                                Some(TokenData::Colon) => {
-                                    self.current += 1;
-                                    let arg_type = self.type_()?;
+            let mut args = vec![];
+            let mut is_variadic = false;
+            loop {
+                match self.current_token() {
+                    Some(TokenData::RightParen) => {
+                        self.current += 1;
+                        break;
+                    }
+                    Some(TokenData::Identifier(arg_name)) => {
+                        self.current += 1;
+                        match self.current_token() {
+                            Some(TokenData::Colon) => {
+                                self.current += 1;
+                                let arg_type = self.type_()?;
 
-                                    args.push((arg_name, arg_type));
+                                args.push((arg_name, arg_type));
 
-                                    match self.current_token() {
-                                        Some(TokenData::Comma) => {
-                                            self.current += 1;
-                                        }
-                                        Some(TokenData::RightParen) => {
-                                            self.current += 1;
-                                            break;
-                                        }
-                                        _ => {
-                                            self.errors.push(ParserError::Expected {
-                                                rule: "',' or ')' in function declaration",
-                                                found: self.full_current_token(),
-                                            });
-                                            return None;
-                                        }
+                                match self.current_token() {
+                                    Some(TokenData::Comma) => {
+                                        self.current += 1;
+                                    }
+                                    Some(TokenData::RightParen) => {
+                                        self.current += 1;
+                                        break;
+                                    }
+                                    _ => {
+                                        expected!(self, "',' or ')' in function declaration")
                                     }
                                 }
-                                _ => {
-                                    self.errors.push(ParserError::Expected {
-                                        rule: "':' in function declaration",
-                                        found: self.full_current_token(),
-                                    });
-                                    return None;
-                                }
                             }
-                        }
-                        Some(TokenData::Ellipsis) => {
-                            self.current += 1;
-                            is_variadic = true;
-                            match self.current_token() {
-                                Some(TokenData::RightParen) => {
-                                    self.current += 1;
-                                    break;
-                                }
-                                _ => {
-                                    self.errors.push(ParserError::Expected {
-                                        rule: "')'",
-                                        found: self.full_current_token(),
-                                    });
-                                    return None;
-                                }
+                            _ => {
+                                expected!(self, "':' in function declaration")
                             }
-                        }
-                        _ => {
-                            self.errors.push(ParserError::Expected {
-                                rule: "')' (end of arguments), identifier (argument name) or '...' (variadic arguments)",
-                                found: self.full_current_token(),
-                            });
-                            return None;
                         }
                     }
-                }
-
-                match self.current_token_no_whitespace() {
-                    Some(TokenData::Arrow) => {
+                    Some(TokenData::Ellipsis) => {
                         self.current += 1;
-                        let return_type = self.type_()?;
-
-                        return Some((name, args, return_type, is_variadic));
+                        is_variadic = true;
+                        match self.current_token() {
+                            Some(TokenData::RightParen) => {
+                                self.current += 1;
+                                break;
+                            }
+                            _ => {
+                                expected!(self, "`)`")
+                            }
+                        }
                     }
-                    _ => return Some((name, args, Type::Void, is_variadic)),
+                    _ => {
+                        expected!(self, "')' (end of arguments), identifier (argument name) or '...' (variadic arguments)")
+                    }
                 }
-            } else {
-                self.errors.push(ParserError::Expected {
-                    rule: "'('",
-                    found: self.full_current_token(),
-                })
             }
-        } else {
-            self.errors.push(ParserError::Expected {
-                rule: "identifier",
-                found: self.full_current_token(),
-            })
-        }
 
-        None
+            let return_type = 
+                if let Some(TokenData::Arrow) = self.current_token_no_whitespace() {
+                    self.current += 1;
+                    self.type_()?
+                } else { Type::Void };
+
+            Some((args, return_type, is_variadic))
+        } else {
+            expected!(self, "`(`")
+        }
+    }
+
+    fn function_head(&mut self) -> Option<(FunctionKind, Vec<(String, Type)>, Type, bool)> {
+        let kind = match self.current_token() {
+            Some(TokenData::Identifier(name)) => {
+                self.current += 1;
+                FunctionKind::Function(name)
+            }
+            Some(TokenData::LeftParen) => {
+                self.current += 1;
+                if let Some(TokenData::Identifier(recv_name)) = self.current_token() {
+                    self.current += 1;
+                    if let Some(TokenData::Colon) = self.current_token() {
+                        self.current += 1;
+                        let recv_type = self.type_()?;
+                        if let Some(TokenData::RightParen) = self.current_token() {
+                            self.current += 1;
+                            if let Some(TokenData::Dot) = self.current_token() {
+                                self.current += 1;
+                                if let Some(TokenData::Identifier(method_name)) = self.current_token() {
+                                    self.current += 1;
+                                    FunctionKind::Method { receiver: (recv_name, recv_type), name: method_name }
+                                } else { expected!(self, "identifier") }
+                            } else { expected!(self, "`.`") }
+                        } else { expected!(self, "`)`") }
+                    } else { expected!(self, "`:`") }
+                } else { expected!(self, "identifier") }
+            }
+            _ => expected!(self, "identifier")
+        };
+
+        let (args, return_type, is_variadic) = self.function_head_end()?;
+
+        Some((kind, args, return_type, is_variadic))
     }
 
     fn function_body(&mut self) -> Option<Vec<Statement>> {
@@ -881,12 +763,7 @@ impl Parser {
                     }
                     None => return Some(statements),
                     _ => {
-                        if first {
-                            self.errors.push(ParserError::Expected {
-                                rule: "new line or `;` (function)",
-                                found: self.full_current_token(),
-                            })
-                        } else {
+                        if !first {
                             break 'consume_separator;
                         }
                     }
@@ -901,26 +778,14 @@ impl Parser {
     fn struct_stmt(&mut self) -> Option<Statement> {
         let name = match self.current_token() {
             Some(TokenData::Identifier(name)) => name,
-            _ => {
-                self.errors.push(ParserError::Expected {
-                    rule: "struct name",
-                    found: self.full_current_token(),
-                });
-                return None;
-            }
+            _ => expected!(self, "struct name")
         };
 
         self.current += 1;
 
         match self.current_token_no_whitespace() {
             Some(TokenData::LeftBrace) => self.current += 1,
-            _ => {
-                self.errors.push(ParserError::Expected {
-                    rule: "`{` after struct name",
-                    found: self.full_current_token(),
-                });
-                return None;
-            }
+            _ => expected!(self, "`{` after struct name")
         }
 
         let mut members = HashMap::new();
@@ -939,35 +804,17 @@ impl Parser {
                                     break;
                                 }
                                 Some(TokenData::Comma) => self.current += 1,
-                                _ => {
-                                    self.errors.push(ParserError::Expected {
-                                        rule: "`,` or `}` in struct declaration",
-                                        found: self.full_current_token(),
-                                    });
-                                    return None;
-                                }
+                                _ => expected!(self, "`,` or `}` in struct declaration")
                             }
                         }
-                        _ => {
-                            self.errors.push(ParserError::Expected {
-                                rule: "`:` after struct member name",
-                                found: self.full_current_token(),
-                            });
-                            return None;
-                        }
+                        _ => expected!(self, "`:` after struct member name")
                     }
                 }
                 Some(TokenData::RightBrace) => {
                     self.current += 1;
                     break;
                 }
-                _ => {
-                    self.errors.push(ParserError::Expected {
-                        rule: "identifier or `}` in struct declaration",
-                        found: self.full_current_token(),
-                    });
-                    return None;
-                }
+                _ => expected!(self, "identifier or `}` in struct declaration")
             }
         }
         Some(Statement::StructDeclaration { name, members })
@@ -985,13 +832,7 @@ impl Parser {
                 self.current += 1;
                 self.function_body()?
             }
-            _ => {
-                self.errors.push(ParserError::Expected {
-                    rule: "if block body",
-                    found: self.full_current_token(),
-                });
-                return None;
-            }
+            _ => expected!(self, "if block body")
         };
 
         conditions_and_bodies.push((condition, body));
@@ -1012,13 +853,7 @@ impl Parser {
                             let body = self.function_body()?;
                             conditions_and_bodies.push((condition, body));
                         }
-                        _ => {
-                            self.errors.push(ParserError::Expected {
-                                rule: "elif block body",
-                                found: self.full_current_token(),
-                            });
-                            return None;
-                        }
+                        _ => expected!(self, "elif block body")
                     }
                 }
                 Some(TokenData::Else) => {
@@ -1029,13 +864,7 @@ impl Parser {
                             else_body = Some(self.function_body()?);
                             break;
                         }
-                        _ => {
-                            self.errors.push(ParserError::Expected {
-                                rule: "else block body",
-                                found: self.full_current_token(),
-                            });
-                            return None;
-                        }
+                        _ => expected!(self, "else block body")
                     }
                 }
                 _ => break,
@@ -1057,13 +886,7 @@ impl Parser {
                 self.current += 1;
                 self.function_body()?
             }
-            _ => {
-                self.errors.push(ParserError::Expected {
-                    rule: "if block body",
-                    found: self.full_current_token(),
-                });
-                return None;
-            }
+            _ => expected!(self, "if block body")
         };
 
         Some(Statement::While { condition, body })
@@ -1085,13 +908,7 @@ impl Parser {
                         self.current += 1;
                         Statement::Import(Import::Relative(name))
                     }
-                    _ => {
-                        self.errors.push(ParserError::Expected {
-                            rule: "identifier",
-                            found: self.full_current_token(),
-                        });
-                        return None;
-                    }
+                    _ => expected!(self, "identifier")
                 }
             }
             _ => Statement::Import(Import::Absolute(self.resource_path()?)),
@@ -1111,13 +928,7 @@ impl Parser {
                         _ => return Some(path),
                     }
                 }
-                _ => {
-                    self.errors.push(ParserError::Expected {
-                        rule: "identifier in resource path",
-                        found: self.full_current_token(),
-                    });
-                    return None;
-                }
+                _ => expected!(self, "identifier in resource path")
             }
         }
     }

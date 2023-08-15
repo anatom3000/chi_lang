@@ -114,7 +114,11 @@ assign_stmt = expression "=" expression
 
 function_body = statement_list* "}"
 extern_body = "\n"* ( "def" function_head "\n"+ )*
-function_head = IDENTIFIER "(" ( IDENTIFIER ":" type ","?sep )* "..."? ")" ("->" type)?
+
+function_head = IDENTIFIER function_head_end
+              | "(" IDENTIFIER ":" type ")" "." IDENTIFIER function_head_end
+
+function_head_end = "(" ( IDENTIFIER ":" type ","?sep )* "..."? ")" ("->" type)?
 resource_path = IDENTIFIER ("." IDENTIFIER)*
 
 (* expressions *)

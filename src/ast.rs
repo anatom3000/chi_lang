@@ -66,6 +66,15 @@ pub enum Type {
 }
 
 #[derive(Debug, Clone)]
+pub enum FunctionKind {
+    Function(String),
+    Method {
+        receiver: (String, Type),
+        name: String
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum Statement {
     Expression(Expression),
     LetAssignment {
@@ -77,7 +86,7 @@ pub enum Statement {
         rhs: Expression,
     },
     FunctionDeclaration {
-        name: String,
+        kind: FunctionKind,
         arguments: Vec<(String, Type)>,
         return_type: Type,
         body: Vec<Statement>,
@@ -92,7 +101,7 @@ pub enum Statement {
         members: HashMap<String, Type>,
     },
     ExternFunctionDeclaration {
-        name: String,
+        kind: FunctionKind,
         arguments: Vec<(String, Type)>,
         return_type: Type,
         is_variadic: bool,

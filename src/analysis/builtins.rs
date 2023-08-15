@@ -21,7 +21,7 @@ macro_rules! num_type {
         (path.clone(), ResourceKind::Type(TypeDefinition {
             path,
             kind: TypeKind::Primitive,
-            supported_binary_operations: HashMap::from([
+            binary_operations: HashMap::from([
                 (BinaryOperator::Plus, results.clone()),
                 (BinaryOperator::Minus, results.clone()),
                 (BinaryOperator::Mul, results.clone()),
@@ -33,7 +33,7 @@ macro_rules! num_type {
                 (BinaryOperator::Lesser, cmp_results.clone()),
                 (BinaryOperator::LesserOrEqual, cmp_results.clone()),
             ]),
-            supported_unary_operations: HashMap::from([
+            unary_operations: HashMap::from([
                 (UnaryOperator::Minus, type_!($self)),
                 (UnaryOperator::Plus, type_!($self))
             ])
@@ -54,7 +54,7 @@ macro_rules! num_type {
         (path.clone(), ResourceKind::Type(TypeDefinition {
             path,
             kind: TypeKind::Primitive,
-            supported_binary_operations: HashMap::from([
+            binary_operations: HashMap::from([
                 (BinaryOperator::Plus, results.clone()),
                 (BinaryOperator::Minus, results.clone()),
                 (BinaryOperator::Mul, results.clone()),
@@ -66,7 +66,7 @@ macro_rules! num_type {
                 (BinaryOperator::Lesser, cmp_results.clone()),
                 (BinaryOperator::LesserOrEqual, cmp_results.clone()),
             ]),
-            supported_unary_operations: HashMap::from([
+            unary_operations: HashMap::from([
                 (UnaryOperator::Plus, type_!($self))
             ])
         }))
@@ -112,11 +112,11 @@ lazy_static! {
             ResourceKind::Type(TypeDefinition {
                 path: vec!["bool".to_string()],
                 kind: TypeKind::Primitive,
-                supported_binary_operations: HashMap::from([(
+                binary_operations: HashMap::from([(
                     BinaryOperator::Equal,
                     HashMap::from([(type_!(bool), type_!(bool))])
                 )]),
-                supported_unary_operations: HashMap::from([(UnaryOperator::Not, type_!(bool))])
+                unary_operations: HashMap::from([(UnaryOperator::Not, type_!(bool))])
             })
         ),
         (
@@ -124,8 +124,8 @@ lazy_static! {
             ResourceKind::Type(TypeDefinition {
                 path: vec!["char".to_string()],
                 kind: TypeKind::Primitive,
-                supported_binary_operations: HashMap::new(),
-                supported_unary_operations: HashMap::new()
+                binary_operations: HashMap::new(),
+                unary_operations: HashMap::new()
             })
         ),
         (
@@ -133,8 +133,8 @@ lazy_static! {
             ResourceKind::Type(TypeDefinition {
                 path: vec!["char".to_string()],
                 kind: TypeKind::Primitive,
-                supported_binary_operations: HashMap::new(),
-                supported_unary_operations: HashMap::new()
+                binary_operations: HashMap::new(),
+                unary_operations: HashMap::new()
             })
         ),
         num_type!(float;),

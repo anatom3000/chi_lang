@@ -6,7 +6,7 @@ use std::hash::Hash;
 use std::path::PathBuf;
 use std::{fs, mem, vec};
 
-use crate::ast::{self, Literal};
+use crate::ast::{self, Literal, FunctionKind};
 use crate::parser::ParserError;
 use crate::transpiler::ModuleTranspiler;
 use crate::{lexer, parser, TranspileError};
@@ -17,23 +17,30 @@ pub mod builtins;
 
 
 // I know this is really bad but I don't care
-pub(crate) struct GlobalPackage(pub(crate) UnsafeCell<HashMap<String, ModuleScope>>);
+pub(crate) struct GlobalPackage(pub(crate) UnsafeCell<HashMap<String, ResourceKind>>);
 
 impl GlobalPackage {
     fn new() -> Self {
         GlobalPackage(UnsafeCell::new(HashMap::new()))
     }
-
-    pub fn get(&self, k: &String) -> Option<&ModuleScope> {
+    
+    pub fn get_res(&self, k: &String) -> Option<&ResourceKind> {
         unsafe { &*self.0.get() }.get(k)
     }
 
     pub fn get_mut(&self, k: &String) -> Option<&mut ModuleScope> {
+        match self.get_res_mut(k)? {
+            ResourceKind::Module(m) => Some(m),
+            _ => unreachable!("resources stored in global package should a module")
+        }
+    }
+    
+    pub fn get_res_mut(&self, k: &String) -> Option<&mut ResourceKind> {
         unsafe { &mut *self.0.get() }.get_mut(k)
     }
 
     pub fn insert(&self, k: String, v: ModuleScope) {
-        unsafe { &mut *self.0.get() }.insert(k, v);
+        unsafe { &mut *self.0.get() }.insert(k, ResourceKind::Module(v));
     }
 }
 
@@ -49,9 +56,19 @@ thread_local! {
 
 pub(crate) fn get_global_resource(path: &[String], visibility: Visibility) -> Result<&ResourceKind, AnalysisError> {
     PACKAGES.with(|p| 
-        p.get(&path[0])
+        p.get_res(&path[0])
         .ok_or_else(|| AnalysisError::UnknownResource(Vec::from(path)))
-        .and_then(|m| m.get_local_resource(&path[1..], visibility))
+        .and_then(|m| {
+            if path.len() == 1 {
+                Ok(m)
+            } else {
+                match m {
+                    ResourceKind::Module(m) => m.get_local_resource(&path[1..], visibility),
+                    _ => unreachable!("resources stored in global package should a module")
+                }
+            }
+            
+        })
         .map(|x| unsafe { &*(x as *const _) }) // lifetimes!
     )
 }
@@ -140,7 +157,11 @@ pub enum AnalysisError {
     ExpectedMutableValue {
         value: Expression
     },
-    EmptyReturn
+    EmptyReturn,
+    ExternMethod {
+        recv: Type,
+        name: String
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -211,7 +232,7 @@ impl Display for UnaryOperator {
 pub enum Type {
     Void,
     Path(Vec<String>),
-    // Array {
+    // Array {m
     //     base: Box<Type>,
     //     size: String
     // },
@@ -378,7 +399,6 @@ impl Expression {
 
 #[derive(Clone, Debug)]
 pub(crate) struct FunctionHead {
-    pub(crate) path: Vec<String>,
     pub(crate) return_type: Type,
     pub(crate) arguments: Vec<(String, Type)>,
     pub(crate) is_variadic: Option<bool>,
@@ -394,17 +414,17 @@ pub enum TypeKind {
 pub struct TypeDefinition {
     pub(crate) path: Vec<String>,
     pub(crate) kind: TypeKind,
-    supported_binary_operations: HashMap<BinaryOperator, HashMap<Type, Type>>,
-    supported_unary_operations: HashMap<UnaryOperator, Type>,
+    binary_operations: HashMap<BinaryOperator, HashMap<Type, Type>>,
+    unary_operations: HashMap<UnaryOperator, Type>,
 }
 
 impl TypeDefinition {
     fn apply_binary(&self, op: BinaryOperator, right: Type) -> Option<&Type> {
-        self.supported_binary_operations.get(&op)?.get(&right)
+        self.binary_operations.get(&op)?.get(&right)
     }
 
     fn apply_unary(&self, op: UnaryOperator) -> Option<&Type> {
-        self.supported_unary_operations.get(&op)
+        self.unary_operations.get(&op)
     }
 }
 
@@ -827,7 +847,7 @@ impl FunctionScope {
 
                 Ok(Expression {
                     data: ExpressionData::FunctionCall {
-                        function: function.path.clone(),
+                        function: module.make_path_absolute(function_name)?,
                         arguments: typed_args,
                     },
                     type_: function.return_type.clone(),
@@ -975,6 +995,7 @@ pub(crate) struct ModuleScope {
     source: Vec<ast::Statement>,
     pub(crate) statements: Vec<Statement>,
     pub(crate) declared_functions: HashMap<String, FunctionScope>,
+    pub(crate) declared_methods: HashMap<String, HashMap<Type, FunctionScope>>,
     pub(crate) resources: HashMap<String, Resource>,
     pub(crate) externs: Vec<String>,
 }
@@ -991,91 +1012,120 @@ impl ModuleScope {
         for stmt in self.source.clone() {
             match stmt {
                 ast::Statement::FunctionDeclaration {
-                    name,
+                    kind,
                     return_type,
                     arguments,
                     body,
                     is_variadic,
                 } => {
 
-                    if is_variadic {
-                        return Err(AnalysisError::NonExternVariadic { name });
-                    }
-
-                    let mut typed_arguments = vec![];
-                    for (name, ty) in arguments {
-                        typed_arguments.push((name, self.analyse_type(ty)?))
-                    }
-
-                    let mut return_type = self.analyse_type(return_type)?;
-
-                    if name == "main" {
-                        // implicitly return int if function is main
-                        if return_type == type_!(void) {
-                            return_type = type_!(int);
+                    match kind {
+                        FunctionKind::Function(name) => {
+                            if is_variadic {
+                                return Err(AnalysisError::NonExternVariadic { name });
+                            }
+        
+                            let mut typed_arguments = vec![];
+                            for (name, ty) in arguments {
+                                typed_arguments.push((name, self.analyse_type(ty)?))
+                            }
+        
+                            let mut return_type = self.analyse_type(return_type)?;
+        
+                            if name == "main" {
+                                // implicitly return int if function is main
+                                if return_type == type_!(void) {
+                                    return_type = type_!(int);
+                                }
+                                
+                                if return_type != type_!(int) {
+                                    return Err(AnalysisError::UnexpectedType {
+                                        expected: type_!(int),
+                                        found: return_type,
+                                    });
+                                }
+                                
+                            }
+                            
+                            let path = vec![name.clone()];
+                            if self.get_resource(&path).is_ok() {
+                                return Err(AnalysisError::ResourceShadowing { path })
+                            }
+        
+                            let head: FunctionHead = FunctionHead {
+                                return_type,
+                                arguments: typed_arguments,
+                                is_variadic: None,
+                            };
+        
+                            let func = FunctionScope::new(body, head.clone());
+        
+                            self.resources
+                                .insert(name.clone(), ResourceKind::Function(head).into());
+                            self.declared_functions.insert(name.clone(), func);
+        
+                            self.statements
+                                .push(Statement::FunctionDeclaration { name })
                         }
-                        
-                        if return_type != type_!(int) {
-                            return Err(AnalysisError::UnexpectedType {
-                                expected: type_!(int),
-                                found: return_type,
-                            });
+                        FunctionKind::Method { receiver: (recv_name, recv_type), name: method_name } => {
+                            let recv_type = self.analyse_type(recv_type)?;
+
+                            if is_variadic {
+                                return Err(AnalysisError::NonExternVariadic { name: format!("({recv_type}).{method_name}") });
+                            }
+
+                            // a method is a function that takes its receiver as the first argument
+                            let mut typed_arguments = vec![(recv_name, recv_type.clone())];
+                            for (name, ty) in arguments {
+                                typed_arguments.push((name, self.analyse_type(ty)?))
+                            }
+
+                            let return_type = self.analyse_type(return_type)?;
+
+                            let head = FunctionHead {
+                                return_type,
+                                arguments: typed_arguments,
+                                is_variadic: None
+                            };
+
+                            let func = FunctionScope::new(body, head.clone());
+
+                            self.declared_methods.entry(method_name).or_insert_with(HashMap::new)
+                                .insert(recv_type, func);
                         }
-                        
                     }
-
-                    let mut path = vec![name.clone()];
-
-                    if !(name == "main" && self.is_main) {
-                        path = self.make_path_absolute(path);
-                    }
-
-                    if self.get_resource(&path).is_ok() {
-                        return Err(AnalysisError::ResourceShadowing { path })
-                    }
-
-                    let head = FunctionHead {
-                        path,
-                        return_type,
-                        arguments: typed_arguments,
-                        is_variadic: None,
-                    };
-
-                    let func = FunctionScope::new(body, head.clone());
-
-                    self.resources
-                        .insert(name.clone(), ResourceKind::Function(head).into());
-                    self.declared_functions.insert(name.clone(), func);
-
-                    self.statements
-                        .push(Statement::FunctionDeclaration { name })
                 }
                 ast::Statement::ExternBlock { source, body } => {
                     for stmt in body {
                         match stmt {
                             ast::Statement::ExternFunctionDeclaration {
-                                name,
+                                kind,
                                 arguments,
                                 return_type,
                                 is_variadic,
                             } => {
-                                let arguments: Vec<(String, Type)> = arguments
-                                    .into_iter()
-                                    .map(|(name, ty)| (name, self.analyse_new_type(ty)))
-                                    .collect();
 
-                                let return_type = self.analyse_new_type(return_type);
+                                let mut typed_arguments = vec![];
+                                for (name, ty) in arguments {
+                                    typed_arguments.push((name, self.analyse_type(ty)?))
+                                }
 
-                                let path = self.make_path_absolute(vec![name.clone()]);
+                                let name = match kind {
+                                    FunctionKind::Function(name) => name,
+                                    FunctionKind::Method { receiver: (_, recv), name } => return Err(AnalysisError::ExternMethod { recv: self.analyse_type(recv)?, name })
+                                };
+
+                                let return_type = self.analyse_type(return_type)?;
+
+                                let path = self.make_path_absolute(vec![name.clone()])?;
 
                                 if self.get_resource(&path).is_ok() {
                                     return Err(AnalysisError::ResourceShadowing { path })
                                 }
 
                                 let func = FunctionHead {
-                                    path,
                                     return_type,
-                                    arguments,
+                                    arguments: typed_arguments,
                                     is_variadic: Some(is_variadic),
                                 };
 
@@ -1102,7 +1152,7 @@ impl ModuleScope {
                         typed_members.insert(m_name, self.analyse_type(m_type)?);
                     }
 
-                    let path = self.make_path_absolute(vec![name.clone()]);
+                    let path = self.make_path_absolute(vec![name.clone()])?;
 
                     if self.get_resource(&path).is_ok() {
                         return Err(AnalysisError::ResourceShadowing { path })
@@ -1117,15 +1167,15 @@ impl ModuleScope {
                             },
                             // TODO: operator overloading
                             // (or at least provide a default internal implementation for `==`)
-                            supported_binary_operations: HashMap::new(),
-                            supported_unary_operations: HashMap::new(),
+                            binary_operations: HashMap::new(),
+                            unary_operations: HashMap::new(),
                         }).into()
                     );
                     self.statements.push(Statement::StructDeclaration { name })
                 }
                 ast::Statement::Import(kind) => match kind {
                     ast::Import::Absolute(path) => {
-                        if self.get_local_resource(&path[..0], Visibility::Module).is_ok() {
+                        if self.get_local_resource(&path[..=0], Visibility::Module).is_ok() {
                             return Err(AnalysisError::ResourceShadowing { path })
                         }
 
@@ -1195,13 +1245,10 @@ impl ModuleScope {
 
         let mut module = self;
 
-        for (index, name) in path.iter().enumerate() {
-            if index + 1 == path.len() {
-                return match module.resources.get(name) {
-                    Some(Resource { kind, visibility: vis }) if *vis <= visibility => Ok(kind),
-                    _ => Err(AnalysisError::UnknownResource(Vec::from(path)))
-                }
-            }
+        let mut path_iter = path.iter();
+        let end = path_iter.next_back().expect("path is not empty");
+
+        for name in path_iter {
             match module.resources.get(name) {
                 Some(Resource {kind: ResourceKind::Alias(path), visibility: vis}) if vis <= &visibility => {
                     if let ResourceKind::Module(m) = get_global_resource(path, Visibility::Public)? {
@@ -1220,7 +1267,10 @@ impl ModuleScope {
             }
         }
         
-        Err(AnalysisError::UnknownResource(Vec::from(path)))
+        return match module.resources.get(end) {
+            Some(Resource { kind, visibility: vis }) if *vis <= visibility => Ok(kind),
+            _ => Err(AnalysisError::UnknownResource(Vec::from(path)))
+        }
     }
 
     pub(crate) fn get_resource(&self, path: &Vec<String>) -> Result<&ResourceKind, AnalysisError> {
@@ -1235,7 +1285,7 @@ impl ModuleScope {
             return Ok(res);
         }
 
-        return get_global_resource(path, Visibility::Public).map(|x| unsafe { &*(x as *const _) })
+        return get_global_resource(path, Visibility::Public).map(|x: &ResourceKind| unsafe { &*(x as *const _) })
     }
 
     pub(crate) fn get_resource_no_vis(&self, path: &Vec<String>) -> Result<&ResourceKind, AnalysisError> {
@@ -1348,6 +1398,7 @@ impl ModuleScope {
             statements: vec![],
             resources: HashMap::new(),
             declared_functions: HashMap::new(),
+            declared_methods: HashMap::new(),
             externs: vec![],
         };
 
@@ -1417,16 +1468,17 @@ impl ModuleScope {
             statements: vec![],
             resources: HashMap::new(),
             declared_functions: HashMap::new(),
+            declared_methods: HashMap::new(),
             externs: vec![],
         })
     }
 
-    fn analyse_new_type(&self, ty: ast::Type) -> Type {
-        match ty {
+    fn _analyse_new_type(&self, ty: ast::Type) -> Result<Type, AnalysisError> {
+        Ok(match ty {
             ast::Type::Void => Type::Void,
-            ast::Type::Path(path) => Type::Path(self.make_path_absolute(path)),
+            ast::Type::Path(path) => Type::Path(self.make_path_absolute(path)?),
             ast::Type::Reference{inner, mutable} => Type::Reference{
-                inner: Box::new(self.analyse_new_type(*inner)),
+                inner: Box::new(self._analyse_new_type(*inner)?),
                 mutable
             },
             // Type::Array { base, size } => Type::Array { base: Box::new(self.analyse_new_type(*base)), size },
@@ -1440,14 +1492,14 @@ impl ModuleScope {
             //
             //     Type::Function { return_type: Box::new(return_type), arguments }
             // }
-        }
+        })
     }
 
     fn analyse_type(&self, ty: ast::Type) -> Result<Type, AnalysisError> {
         Ok(match ty {
             ast::Type::Void => Type::Void,
             ast::Type::Path(name) => {
-                Type::Path(self.make_path_absolute(self.get_type(&name).map(|_| name)?))
+                Type::Path(self.make_path_absolute(self.get_type(&name).map(|_| name)?)?)
             }
             ast::Type::Reference { inner, mutable } => Type::Reference {
                 inner: Box::new(self.analyse_type(*inner)?),
@@ -1456,14 +1508,59 @@ impl ModuleScope {
         })
     }
 
-    fn make_path_absolute(&self, mut path: Vec<String>) -> Vec<String> {
+    pub(crate) fn make_path_absolute(&self, mut path: Vec<String>) -> Result<Vec<String>, AnalysisError> {
         if builtins::TYPES.get(&path).is_some() {
-            return path;
+            return Ok(path);
         }
 
-        let mut abs_path = self.path.clone();
-        abs_path.append(&mut path);
-        abs_path
+        if self.is_main && path.len() == 1 && path[0] == "main" {
+            return Ok(path);
+        }
+
+        let mut nonlocal = false;
+        let mut absolute = Vec::with_capacity(path.len());
+
+        let mut module = self;
+
+        let mut path_iter = path.iter();
+        let end = path_iter.next_back().expect("path is not empty").clone();
+
+        for name in path_iter {
+
+            match module.resources.get(name) {
+                Some(Resource {kind: ResourceKind::Alias(path), ..}) => {
+                    if let ResourceKind::Module(m) = get_global_resource(&path, Visibility::Bypass)? {
+                        absolute.clear();
+                        absolute.append(&mut path.clone());
+                        module = m
+                    }
+                },
+                Some(Resource {kind: ResourceKind::Module(m), ..}) => {
+                    if !nonlocal {
+                        absolute.append(&mut self.path.clone());
+                    }
+                    absolute.push(name.clone());
+                    module = m
+                },
+                _ => return Err(AnalysisError::UnknownResource(Vec::from(path)))
+            }
+            nonlocal = true;
+        }
+        
+        if nonlocal {
+            match module.resources.get(&end) {
+                Some(Resource {..}) => {
+                    absolute.push(end);
+                    Ok(absolute)
+                }
+                _ => return Err(AnalysisError::UnknownResource(Vec::from(path))),
+            }
+        } else {
+            let mut absolute = self.path.clone();
+            absolute.append(&mut path);
+            Ok(absolute)
+        }
+                
     }
 
     fn type_literal(&self, value: Literal) -> Result<Expression, AnalysisError> {
