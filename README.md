@@ -45,6 +45,7 @@ Executable generation is only supported on Linux (and perhaps MacOS, untested), 
 - [x] Immutable/Mutable References `&x`/`!x`
 - [x] Auto (de)referencing
 - [ ] Struct methods
+- [ ] Fix resource visibility
 - [ ] Enums
 - [ ] Generics
 - [ ] Nullable Pointers as `Option<!T>` (similar to Rust's null pointer optimization but with C compatibility)
