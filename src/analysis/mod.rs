@@ -124,6 +124,10 @@ pub enum AnalysisError {
         instance_type: Type,
         member: String,
     },
+    UnknownMethod {
+        instance_type: Type,
+        method: String
+    },
     DuplicateStructMember {
         struct_name: String,
         duplicated_member: String,
@@ -303,6 +307,11 @@ pub enum ExpressionData {
         function: Vec<String>,
         arguments: Vec<Expression>,
     },
+    MethodCall {
+        receiver: Type,
+        method: String,
+        arguments: Vec<Expression>,
+    },
     StructMember {
         instance: Box<Expression>,
         member: String,
@@ -388,6 +397,29 @@ impl Expression {
                     data: ExpressionData::Unary { operator: UnaryOperator::Ref, argument: Box::new(new) },
                     mutable: false,
                     type_: Type::Reference { inner: Box::new(found), mutable: false }
+                })
+            }
+
+            (found, expected) => Err(AnalysisError::UnexpectedType { expected: expected.clone(), found }),
+        }
+    }
+    
+    fn coerce_to_mutable(self, expected: &Type, mutable: bool) -> Result<Expression, AnalysisError> {
+        if mutable && !self.mutable {
+            return Err(AnalysisError::ExpectedMutableValue { value: self })
+        }
+        
+        if self.type_.can_coerce_to(expected) {
+            return Ok(self)
+        }
+
+        match (self.type_.clone(), expected) {
+            (found, Type::Reference { inner, mutable: ref_is_mut }) => {
+                let new = self.coerce_to_mutable(inner, mutable)?;
+                Ok(Expression {
+                    data: ExpressionData::Unary { operator: UnaryOperator::Ref, argument: Box::new(new) },
+                    mutable: false,
+                    type_: Type::Reference { inner: Box::new(found), mutable: *ref_is_mut }
                 })
             }
 
@@ -483,6 +515,47 @@ impl FunctionScope {
         name: &Vec<String>,
     ) -> Result<&FunctionHead, AnalysisError> {
         module.get_function_head(name)
+    }
+
+    fn get_method_head<'a>(
+        &'a self,
+        module: &'a ModuleScope,
+        mut instance: Expression,
+        method_name: String,
+    ) -> Result<(Expression, &Vec<String>, &FunctionHead), AnalysisError> {
+        let candidates = module.declared_methods.get(&method_name).ok_or(AnalysisError::UnknownMethod { instance_type: instance.type_.clone(), method: method_name.clone() })?;
+
+        if let Some((impl_module, func)) = candidates.get(&instance.type_) {
+            return Ok((instance, impl_module, &func.head))
+        }
+
+        for (type_, (impl_module, func)) in candidates {
+            let mut base = type_.clone();
+            let mut derefs = vec![];
+            let mut found = false;
+            while let Type::Reference { inner, mutable } = base {
+                derefs.push(mutable);
+                base = *inner;
+                if base == instance.type_ { found = true; break }
+            }
+
+            if found {
+                for mutable in derefs.into_iter().rev() {
+                    instance = Expression {
+                        type_: Type::Reference {
+                            inner: Box::new(instance.type_.clone()),
+                            mutable
+                        },
+                        data: ExpressionData::Unary { operator: if mutable {UnaryOperator::MutRef} else {UnaryOperator::Ref}, argument: Box::new(instance) },
+                        mutable,
+                    }
+                }
+
+                return Ok((instance, impl_module, &func.head))
+            }
+        }
+
+        Err(AnalysisError::UnknownMethod { instance_type: instance.type_, method: method_name })
     }
 
     fn get_variable<'a>(
@@ -854,6 +927,46 @@ impl FunctionScope {
                     mutable: maybe_mutable && function.return_type.mutability_hint()
                 })
             }
+            ast::Expression::MethodCall { instance, method, arguments } => {
+                let instance = self.type_expression(module,*instance, true)?;
+                let (instance, _, function) = self.get_method_head(module, instance, method.clone())?;
+
+                let mut typed_args = vec![];
+
+                if function.arguments.len() != arguments.len()+1 {
+                    return Err(AnalysisError::WrongArgumentCount {
+                        function: vec![format!("{}.{}", function.arguments[0].1, method)],
+                        expected: function.arguments.len(),
+                        found: arguments.len(),
+                    });
+                }
+
+                let mut func_args_iter = function.arguments.iter();
+
+                let (_, receiver_type) = func_args_iter.next().expect("methods always have at least one parameter");
+
+                typed_args.push(instance.coerce_to_mutable(receiver_type, receiver_type.mutability_hint())?);
+
+                for (expected, found) in std::iter::zip(func_args_iter, arguments) {
+                    // TODO: ownership
+                    let should_be_mutable = expected.1.mutability_hint();
+
+                    typed_args.push(
+                        self.type_expression(module, found, should_be_mutable)?
+                            .coerce_to(&expected.1, should_be_mutable)?
+                    )
+                }
+
+                Ok(Expression {
+                    data: ExpressionData::MethodCall {
+                        receiver: receiver_type.clone(),
+                        method,
+                        arguments: typed_args
+                    },
+                    type_: function.return_type.clone(),
+                    mutable: maybe_mutable && function.return_type.mutability_hint()
+                })
+            },
             ast::Expression::Variable(name) => Ok(match self.get_variable(module, &name)? {
                 VariableOrAttribute::Variable(var) => Expression {
                     data: ExpressionData::Variable(name),
@@ -995,7 +1108,7 @@ pub(crate) struct ModuleScope {
     source: Vec<ast::Statement>,
     pub(crate) statements: Vec<Statement>,
     pub(crate) declared_functions: HashMap<String, FunctionScope>,
-    pub(crate) declared_methods: HashMap<String, HashMap<Type, FunctionScope>>,
+    pub(crate) declared_methods: HashMap<String, HashMap<Type, (Vec<String>, FunctionScope)>>,
     pub(crate) resources: HashMap<String, Resource>,
     pub(crate) externs: Vec<String>,
 }
@@ -1091,7 +1204,7 @@ impl ModuleScope {
                             let func = FunctionScope::new(body, head.clone());
 
                             self.declared_methods.entry(method_name).or_insert_with(HashMap::new)
-                                .insert(recv_type, func);
+                                .insert(recv_type, (self.path.clone(), func));
                         }
                     }
                 }
@@ -1224,6 +1337,17 @@ impl ModuleScope {
         }
 
         self.declared_functions = declared_functions;
+
+        let mut declared_methods = mem::take(&mut self.declared_methods);
+
+
+        for impls in declared_methods.values_mut() {
+            for (_, func) in impls.values_mut() {
+                func.execution_pass(self)?;
+            }
+        }
+
+        self.declared_methods = declared_methods;
 
         for res in self.resources.values_mut() {
             match &mut res.kind {

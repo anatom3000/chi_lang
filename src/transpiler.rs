@@ -39,6 +39,37 @@ impl<'a> ModuleTranspiler<'a> {
             new.includes.insert(if ext.starts_with('<') && ext.ends_with('>') { ext.clone() } else { format!("\"{}\"", ext) });
         }
 
+        for (method, impls) in &new.scope.declared_methods {
+            for (receiver, (impl_module, func)) in impls {
+                let args = func
+                    .head
+                    .arguments
+                    .iter()
+                    .map(|(name, type_)| {
+                        new.shadowed_variables.insert(name.clone(), 0);
+                        new.transpile_declaration(type_, name)
+                    })
+                    .collect::<Vec<String>>()
+                    .join(", ");
+
+                // args is never empty since it has at least a receiver
+
+                let name = new.transpile_method_path(receiver, method, impl_module);
+                let declaration = new
+                    .transpile_declaration(&func.head.return_type, &format!("{name}({args})"));
+
+                let mut code = vec![];
+                new.indent += 1;
+                for stmt in &func.statements {
+                    code.push(new.transpile_statement(stmt))
+                }
+                new.shadowed_variables.clear();
+                new.indent -= 1;
+                //new.source.pop();
+                new.functions.push((declaration, code.join("\n")))
+            }
+        }
+
         for stmt in &new.scope.statements {
             match stmt {
                 Statement::FunctionDeclaration { name } => {
@@ -51,7 +82,7 @@ impl<'a> ModuleTranspiler<'a> {
                     let mut args = func
                         .head
                         .arguments
-                        .into_iter()
+                        .iter()
                         .map(|(name, type_)| {
                             new.shadowed_variables.insert(name.clone(), 0);
                             new.transpile_declaration(type_, name)
@@ -66,11 +97,11 @@ impl<'a> ModuleTranspiler<'a> {
                     // don't "namespacify" the function name if function is the main function or an extern function
                     let func_name = new.transpile_path(&new.scope.make_path_absolute(vec![name.clone()]).expect("referenced path exists"));
                     let declaration = new
-                        .transpile_declaration(func.head.return_type, format!("{func_name}({args})"));
+                        .transpile_declaration(&func.head.return_type, &format!("{func_name}({args})"));
 
                     let mut code = vec![];
                     new.indent += 1;
-                    for stmt in func.statements {
+                    for stmt in &func.statements {
                         code.push(new.transpile_statement(stmt))
                     }
                     new.shadowed_variables.clear();
@@ -92,7 +123,7 @@ impl<'a> ModuleTranspiler<'a> {
                     let mut body = vec![];
                     new.indent += 1;
                     for (m_name, m_type) in members {
-                        let decl = new.transpile_declaration(m_type, m_name);
+                        let decl = new.transpile_declaration(&m_type, &m_name);
                         body.push(new.add_line(format!("{decl};")));
                     }
                     new.indent -= 1;
@@ -128,23 +159,23 @@ impl<'a> ModuleTranspiler<'a> {
         format!("{}{line}", "    ".repeat(self.indent))
     }
 
-    fn transpile_statement(&mut self, stmt: Statement) -> String {
+    fn transpile_statement(&mut self, stmt: &Statement) -> String {
         use Statement::*;
         match stmt {
             Expression(expr) => {
-                let expr = self.transpile_expression(expr.data);
+                let expr = self.transpile_expression(&expr.data);
                 self.add_line(format!("{expr};"))
             }
             LetAssignment { name, value } => {
-                let expr = self.transpile_expression(value.data);
+                let expr = self.transpile_expression(&value.data);
                 let name = self.transpile_new_variable(name);
-                let declaration = self.transpile_declaration(value.type_, name);
+                let declaration = self.transpile_declaration(&value.type_, &name);
 
                 self.add_line(format!("{} = {};", declaration, expr))
             }
             Assignment { lhs, rhs } => {
-                let lhs = self.transpile_expression(lhs.data);
-                let rhs = self.transpile_expression(rhs.data);
+                let lhs = self.transpile_expression(&lhs.data);
+                let rhs = self.transpile_expression(&rhs.data);
 
                 self.add_line(format!("{} = {};", lhs, rhs))
             }
@@ -156,7 +187,7 @@ impl<'a> ModuleTranspiler<'a> {
 
                 let mut first = true;
                 for (condition, body) in conditions_and_bodies {
-                    let condition = self.transpile_expression(condition.data);
+                    let condition = self.transpile_expression(&condition.data);
                     if first {
                         first = false;
                         code.push(self.add_line(format!("if ({}) {{", condition)));
@@ -187,7 +218,7 @@ impl<'a> ModuleTranspiler<'a> {
             While { condition, body } => {
                 let mut code = vec![];
 
-                let condition = self.transpile_expression(condition.data);
+                let condition = self.transpile_expression(&condition.data);
                 code.push(self.add_line(format!("while ({}) {{", condition)));
 
                 self.indent += 1;
@@ -203,7 +234,7 @@ impl<'a> ModuleTranspiler<'a> {
             Return(expr) => {
                 match expr {
                     Some(expr) => {
-                        let expr = self.transpile_expression(expr.data);
+                        let expr = self.transpile_expression(&expr.data);
                         self.add_line(format!("return {};", expr))
                     }
                     None => self.add_line(format!("return;")),
@@ -215,7 +246,7 @@ impl<'a> ModuleTranspiler<'a> {
         }
     }
 
-    fn transpile_expression(&mut self, expr: ExpressionData) -> String {
+    fn transpile_expression(&mut self, expr: &ExpressionData) -> String {
         match expr {
             ExpressionData::Binary {
                 left,
@@ -224,8 +255,8 @@ impl<'a> ModuleTranspiler<'a> {
             } => {
                 format!(
                     "{} {operator} {}",
-                    self.transpile_expression(left.data),
-                    self.transpile_expression(right.data)
+                    self.transpile_expression(&left.data),
+                    self.transpile_expression(&right.data)
                 )
             }
             ExpressionData::FunctionCall {
@@ -236,72 +267,87 @@ impl<'a> ModuleTranspiler<'a> {
                     Ok(ResourceKind::Function(func)) => func,
                     _ => unreachable!("called function exists"),
                 };
-                let function = if head.is_variadic.is_some() {
+                let name = if head.is_variadic.is_some() {
                     function.last().expect("path is not empty").clone()
                 } else {
                     self.transpile_path(&function)
                 };
                 let args = arguments
                     .into_iter()
-                    .map(|e| self.transpile_expression(e.data))
+                    .map(|e| self.transpile_expression(&e.data))
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!("{function}({args})")
+                format!("{name}({args})")
             }
+            ExpressionData::MethodCall { receiver, method, arguments } => {
+                let (impl_module, _) = self.scope.declared_methods
+                    .get(method)
+                        .expect("called method name exists")
+                    .get(&receiver)
+                        .expect("called method on type exists");
+                
+                let name = self.transpile_method_path(&receiver, &method, impl_module);
+                let args = arguments
+                    .into_iter()
+                    .map(|e| self.transpile_expression(&e.data))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{name}({args})")
+            },
             ExpressionData::Literal(lit) => match lit {
                 Literal::String(content) => format!("\"{}\"", content),
-                Literal::Integer { value, .. } => value,
+                Literal::Integer { value, .. } => value.clone(),
                 Literal::Float { value, size } => match size {
                     Some(32) => format!("{}f", value),
-                    _ => value,
+                    _ => value.clone(),
                 },
                 Literal::Null => "NULL".to_string(),
                 Literal::True => "true".to_string(),
                 Literal::False => "false".to_string(),
             },
             ExpressionData::ParenBlock(inner) => {
-                format!("({})", self.transpile_expression(inner.data))
+                format!("({})", self.transpile_expression(&inner.data))
             }
             ExpressionData::Unary { operator, argument } => {
-                format!("{operator}{}", self.transpile_expression(argument.data))
+                format!("{operator}{}", self.transpile_expression(&argument.data))
             }
             ExpressionData::Variable(path) => {
                 if path.len() == 1 {
-                    self.transpile_variable(path.into_iter().next().expect("path length is 1"))
+                    self.transpile_variable(&path[0])
                 } else {
                     self.transpile_path(&path)
                 }
                 
             },
             ExpressionData::StructMember { instance, member } => {
-                format!("{}.{}", self.transpile_expression(instance.data), member)
+                format!("{}.{}", self.transpile_expression(&instance.data), member)
             }
             ExpressionData::StructInit { path, members } => {
                 let members = members
                     .into_iter()
                     .map(|(m_name, m_value)| {
-                        format!(".{m_name} = {}", self.transpile_expression(m_value.data))
+                        format!(".{m_name} = {}", self.transpile_expression(&m_value.data))
                     })
                     .collect::<Vec<_>>()
                     .join(", ");
 
-                format!("({}) {{ {members} }}", self.transpile_type(path))
+                format!("({}) {{ {members} }}", self.transpile_named_type(&path))
             }
         }
     }
 
-    fn transpile_declaration(&mut self, type_: Type, variable: String) -> String {
+    fn transpile_declaration(&mut self, type_: &Type, variable: &String) -> String {
         match type_ {
             Type::Void => format!("void {variable}",),
             Type::Path(path) if path[0] == "str" => {
                 // hack until a real string type is implemented
                 format!("char *{variable}")
             },
-            Type::Path(path) => format!("{} {variable}", self.transpile_type(path)),
+            Type::Path(path) => format!("{} {variable}", self.transpile_named_type(&path)),
             Type::Reference { inner, mutable: _ } => {
-                match *inner {
+                match **inner {
                     Type::Void | Type::Path(_) | Type::Reference{..} => {
-                        self.transpile_declaration(*inner, format!("*{variable}"))
+                        self.transpile_declaration(inner, &format!("*{variable}"))
                     }
                     // _ => self.transpile_declaration(*inner, format!("(*{variable})"))
                 }
@@ -316,13 +362,13 @@ impl<'a> ModuleTranspiler<'a> {
         }
     }
 
-    fn transpile_variable(&self, name: String) -> String {
-        let n = self.shadowed_variables.get(&name).expect("used variables should be declared").clone();
+    fn transpile_variable(&self, name: &String) -> String {
+        let n = self.shadowed_variables.get(name).expect("used variables should be declared").clone();
         format!("{name}{}", "_".repeat(n))
     }
 
-    fn transpile_new_variable(&mut self, name: String) -> String {
-        let n = match self.shadowed_variables.get(&name).cloned() {
+    fn transpile_new_variable(&mut self, name: &String) -> String {
+        let n = match self.shadowed_variables.get(name).cloned() {
             Some(n) => n+1,
             None => 0
         };
@@ -335,7 +381,7 @@ impl<'a> ModuleTranspiler<'a> {
         path.join("_")
     }
 
-    fn transpile_type(&self, path: Vec<String>) -> String {
+    fn transpile_named_type(&self, path: &Vec<String>) -> String {
         if path.len() == 1 {
             match path[0].as_str() {
                 "int" => "int".to_string(),
@@ -360,12 +406,32 @@ impl<'a> ModuleTranspiler<'a> {
                 "usize" => "size_t".to_string(),
                 "isize" => "ptrdiff_t".to_string(),
 
-                _ => self.transpile_path(&path),
+                _ => self.transpile_path(path),
             }
         } else {
-            self.transpile_path(&path)
+            self.transpile_path(path)
         }
     }
+
+    fn transpile_type(&self, ty: &Type) -> String {
+        match ty {
+            Type::Void => "void".to_string(),
+            Type::Path(path) => self.transpile_named_type(path),
+            Type::Reference { inner, mutable } => {
+                if *mutable {
+                    format!("_mutref__{}", self.transpile_type(inner))
+                } else {
+                    format!("_ref__{}", self.transpile_type(inner))
+                }
+            }
+        }
+    }
+
+    fn transpile_method_path(&self, receiver: &Type, method: &String, impl_module: &Vec<String>) -> String {
+        format!("{}__{}_{}", self.transpile_type(receiver), self.transpile_path(&impl_module), method)
+    }
+
+
 }
 
 impl<'a> Display for ModuleTranspiler<'a> {

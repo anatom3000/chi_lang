@@ -134,6 +134,7 @@ unary = ("not" | "+" | "-" | "&" | "!" | "*") unary
 primary = INTEGER
         | FLOAT
         | function_call
+        | method_call
         | struct_member
         | struct_init
         | resource_path
@@ -144,6 +145,7 @@ primary = INTEGER
         | "(" expression ")"
 
 function_call = resource_path "(" ( expression "," )* ")"
+method_call = primary "." IDENTIFIER "(" ( expression "," )* ")"
 struct_member = primary "." IDENTIFIER
 struct_init = IDENTIFIER "{" ( IDENTIFIER ":" expression "," )* "}"
 

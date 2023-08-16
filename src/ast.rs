@@ -35,6 +35,11 @@ pub enum Expression {
         function: Vec<String>,
         arguments: Vec<Expression>,
     },
+    MethodCall {
+        instance: Box<Expression>,
+        method: String,
+        arguments: Vec<Expression>,
+    },
     StructMember {
         instance: Box<Expression>,
         member: String,

@@ -7,7 +7,7 @@ struct Point {
     y: float,
 }
 
-def (self: Point).add(other: Point) {
+def (self: Point).add(other: Point) -> Point {
     return Point {
         x: self.x + other.x,
         y: self.y + other.y
@@ -29,14 +29,19 @@ def main() {
         x: 1.0,
         y: -1.0
     }
+    
+    let another = Point { x: 2.0, y: 40.0 }
+
+    let result = (origin).add(another)
 
     // we misplaced the origin, let's fix it!
-    // structs are mutable
+    // luckily, structs are mutable
     origin.x = 0.0
     origin.y = 0.0
     
     // of course we can access struct attributes
     printf("The origin is at (%f, %f).\n", origin.x, origin.y)
+    printf("The result is at (%f, %f).\n", result.x, result.y)
 
     let unit = Line {
         start: Point { x: 0.0, y: 0.0 },

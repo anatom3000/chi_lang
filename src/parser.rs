@@ -221,10 +221,24 @@ impl Parser {
                     match self.current_token() {
                         Some(TokenData::Identifier(member)) => {
                             self.current += 1;
-                            expr = Expression::StructMember {
-                                instance: Box::new(expr),
-                                member,
+                            expr = match self.current_token() {
+                                Some(TokenData::LeftParen) => {
+                                    self.current += 1;
+                                    let args = self.function_call_arguments()?;
+                                    Expression::MethodCall {
+                                        instance: Box::new(expr), 
+                                        method: member, 
+                                        arguments: args
+                                    }
+                                },
+                                _ => {
+                                    Expression::StructMember {
+                                        instance: Box::new(expr),
+                                        member,
+                                    }
+                                }
                             }
+                            
                         }
                         _ => expected!(self, "identifier after `.`")
                     }
