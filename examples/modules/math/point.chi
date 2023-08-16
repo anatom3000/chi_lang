@@ -1,9 +1,9 @@
-struct Point {
+pub struct Point {
     x: float,
     y: float,
 }
 
-def add(a: Point, b: Point) -> Point {
+pub def add(a: Point, b: Point) -> Point {
     return Point {
         x: a.x + b.x,
         y: a.y + b.y,

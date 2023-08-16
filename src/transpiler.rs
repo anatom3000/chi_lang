@@ -118,7 +118,7 @@ impl<'a> ModuleTranspiler<'a> {
                     let TypeKind::Struct {members} = struct_type.kind.clone()
                         else { unreachable!("defined struct should have struct type ") };
     
-                    let struct_name = new.transpile_path(&struct_type.path);
+                    let struct_name = new.transpile_path(&new.scope.make_path_absolute(vec![name.clone()]).expect("referenced path exists"));
 
                     let mut body = vec![];
                     new.indent += 1;
@@ -179,10 +179,7 @@ impl<'a> ModuleTranspiler<'a> {
 
                 self.add_line(format!("{} = {};", lhs, rhs))
             }
-            If {
-                conditions_and_bodies,
-                else_body,
-            } => {
+            If { conditions_and_bodies, else_body, } => {
                 let mut code = vec![];
 
                 let mut first = true;
@@ -248,21 +245,14 @@ impl<'a> ModuleTranspiler<'a> {
 
     fn transpile_expression(&mut self, expr: &ExpressionData) -> String {
         match expr {
-            ExpressionData::Binary {
-                left,
-                operator,
-                right,
-            } => {
+            ExpressionData::Binary { left, operator, right, } => {
                 format!(
                     "{} {operator} {}",
                     self.transpile_expression(&left.data),
                     self.transpile_expression(&right.data)
                 )
             }
-            ExpressionData::FunctionCall {
-                function,
-                arguments,
-            } => {
+            ExpressionData::FunctionCall { function, arguments, } => {
                 let head = match self.scope.get_resource_no_vis(&function) {
                     Ok(ResourceKind::Function(func)) => func,
                     _ => unreachable!("called function exists"),
@@ -270,7 +260,7 @@ impl<'a> ModuleTranspiler<'a> {
                 let name = if head.is_variadic.is_some() {
                     function.last().expect("path is not empty").clone()
                 } else {
-                    self.transpile_path(&function)
+                    self.transpile_path(&self.scope.make_path_absolute(function.clone()).expect("referenced path exists"))
                 };
                 let args = arguments
                     .into_iter()
@@ -406,10 +396,10 @@ impl<'a> ModuleTranspiler<'a> {
                 "usize" => "size_t".to_string(),
                 "isize" => "ptrdiff_t".to_string(),
 
-                _ => self.transpile_path(path),
+                _ => self.transpile_path(&self.scope.make_path_absolute(path.clone()).expect("referenced type exists")),
             }
         } else {
-            self.transpile_path(path)
+            self.transpile_path(&self.scope.make_path_absolute(path.clone()).expect("referenced type exists"))
         }
     }
 

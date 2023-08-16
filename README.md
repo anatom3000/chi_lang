@@ -44,10 +44,10 @@ Executable generation is only supported on Linux (and perhaps MacOS, untested), 
 #### MVP
 - [x] Immutable/Mutable References `&x`/`!x`
 - [x] Auto (de)referencing
-- [ ] Struct methods
+- [x] Struct methods
 - [ ] Fix resource visibility
-- [ ] Enums
 - [ ] Generics
+- [ ] Enums
 - [ ] Nullable Pointers as `Option<!T>` (similar to Rust's null pointer optimization but with C compatibility)
 - [ ] Array support (temporary C semantics)
 
@@ -86,6 +86,7 @@ statement_list = ("\n" | ";")* ( statement ("\n" | ";")* )*
 statement = def_stmt
           | struct_stmt
           | extern_stmt
+          | import_stmt
           | let_stmt
           | if_stmt
           | while_stmt
@@ -94,6 +95,10 @@ statement = def_stmt
           | expression
 
 (* module level statements *)
+pub_stmt = "pub" def_stmt
+         | "pub" struct_stmt
+         | "pub" import_stmt
+
 def_stmt = "def" function_head "{" function_body
 struct_stmt = "struct" IDENTIFIER "{" ( IDENTIFIER ":" type ","?sep )* "}"
 extern_stmt = "extern" STRING "{" extern_body

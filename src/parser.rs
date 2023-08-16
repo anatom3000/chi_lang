@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::vec;
 
+use crate::analysis::Visibility;
 use crate::ast::{self, Expression, Import, Literal, Statement, Type, FunctionKind};
 use crate::lexer::{self, Token, TokenData};
 
@@ -53,7 +54,7 @@ impl Display for ParserError {
 }
 
 #[derive(Debug)]
-pub struct Parser {
+pub(crate) struct Parser {
     pub tokens: Vec<Token>,
     pub errors: Vec<ParserError>,
     current: usize,
@@ -483,14 +484,44 @@ impl Parser {
     }
 
     fn statement(&mut self) -> Option<Statement> {
+        let mut visibility = Visibility::Module;
+
         match self.current_token_no_whitespace() {
+            Some(TokenData::Pub) => {
+                visibility = Visibility::Public;
+                self.current += 1;
+                match self.current_token() {
+                    Some(TokenData::Def) => {
+                        self.current += 1;
+                        self.def_stmt(visibility)
+                    }
+                    Some(TokenData::Struct) => {
+                        self.current += 1;
+                        self.struct_stmt(visibility)
+                    }
+                    Some(TokenData::Import) => {
+                        self.current += 1;
+                        self.import_stmt(visibility)
+                    }
+                    _ => expected!(self, "`def`, `struct` or `import` after `pub`")
+                }
+            },
+            Some(TokenData::Def) => {
+                self.current += 1;
+                self.def_stmt(visibility)
+            }
+            Some(TokenData::Struct) => {
+                self.current += 1;
+                self.struct_stmt(visibility)
+            }
+            Some(TokenData::Import) => {
+                self.current += 1;
+                self.import_stmt(visibility)
+            }
+
             Some(TokenData::Let) => {
                 self.current += 1;
                 self.let_stmt()
-            }
-            Some(TokenData::Def) => {
-                self.current += 1;
-                self.def_stmt()
             }
             Some(TokenData::Extern) => {
                 self.current += 1;
@@ -500,10 +531,6 @@ impl Parser {
                 self.current += 1;
                 self.if_stmt()
             }
-            Some(TokenData::Struct) => {
-                self.current += 1;
-                self.struct_stmt()
-            }
             Some(TokenData::While) => {
                 self.current += 1;
                 self.while_stmt()
@@ -511,10 +538,6 @@ impl Parser {
             Some(TokenData::Return) => {
                 self.current += 1;
                 self.return_stmt()
-            }
-            Some(TokenData::Import) => {
-                self.current += 1;
-                self.import_stmt()
             }
             Some(_) => {
                 let expr = self.expression()?;
@@ -552,7 +575,7 @@ impl Parser {
         }
     }
 
-    fn def_stmt(&mut self) -> Option<Statement> {
+    fn def_stmt(&mut self, visibility: Visibility) -> Option<Statement> {
         let (kind, arguments, return_type, is_variadic) = self.function_head()?;
 
         match self.current_token() {
@@ -562,6 +585,7 @@ impl Parser {
         let body = self.function_body()?;
 
         Some(Statement::FunctionDeclaration {
+            visibility,
             kind,
             return_type,
             arguments,
@@ -570,7 +594,7 @@ impl Parser {
         })
     }
 
-    fn extern_def_stmt(&mut self) -> Option<Statement> {
+    fn extern_def_stmt(&mut self, visibility: Visibility) -> Option<Statement> {
         let (kind, arguments, return_type, is_variadic) = self.function_head()?;
 
         Some(Statement::ExternFunctionDeclaration {
@@ -578,6 +602,7 @@ impl Parser {
             arguments,
             return_type,
             is_variadic,
+            visibility
         })
     }
 
@@ -615,12 +640,26 @@ impl Parser {
         }
 
         loop {
-            match self.current_token() {
-                Some(TokenData::Def) => self.current += 1,
-                _ => expected!(self, "def statement in extern block")
-            }
+            
+            let visibility = match self.current_token() {
+                Some(TokenData::Def) => {
+                    self.current += 1;
+                    Visibility::Module
+                },
+                Some(TokenData::Pub) => {
+                    self.current += 1;
+                    match self.current_token() {
+                        Some(TokenData::Def) => {
+                            self.current += 1;
+                            Visibility::Module
+                        },
+                        _ => expected!(self, "`def` after `pub` in extern block")
+                    }
+                }
+                _ => expected!(self, "`def` or `pub` in extern block")
+            };
 
-            statements.push(self.extern_def_stmt()?);
+            statements.push(self.extern_def_stmt(visibility)?);
 
             let mut first = true;
             'consume_separator: loop {
@@ -789,7 +828,7 @@ impl Parser {
         Some(statements)
     }
 
-    fn struct_stmt(&mut self) -> Option<Statement> {
+    fn struct_stmt(&mut self, visibility: Visibility) -> Option<Statement> {
         let name = match self.current_token() {
             Some(TokenData::Identifier(name)) => name,
             _ => expected!(self, "struct name")
@@ -831,7 +870,7 @@ impl Parser {
                 _ => expected!(self, "identifier or `}` in struct declaration")
             }
         }
-        Some(Statement::StructDeclaration { name, members })
+        Some(Statement::StructDeclaration { visibility, name, members })
     }
 
     fn if_stmt(&mut self) -> Option<Statement> {
@@ -913,19 +952,19 @@ impl Parser {
         })
     }
 
-    fn import_stmt(&mut self) -> Option<Statement> {
+    fn import_stmt(&mut self, visibility: Visibility) -> Option<Statement> {
         Some(match self.current_token() {
             Some(TokenData::Dot) => {
                 self.current += 1;
                 match self.current_token() {
                     Some(TokenData::Identifier(name)) => {
                         self.current += 1;
-                        Statement::Import(Import::Relative(name))
+                        Statement::Import { kind: Import::Relative(name), visibility }
                     }
                     _ => expected!(self, "identifier")
                 }
             }
-            _ => Statement::Import(Import::Absolute(self.resource_path()?)),
+            _ => Statement::Import { kind: Import::Absolute(self.resource_path()?), visibility },
         })
     }
 

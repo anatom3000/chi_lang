@@ -165,6 +165,9 @@ pub enum AnalysisError {
     ExternMethod {
         recv: Type,
         name: String
+    },
+    PrivateResource {
+        path: Vec<String>,
     }
 }
 
@@ -255,12 +258,13 @@ impl Type {
         !matches!(self, Type::Reference { inner: _, mutable: false })
     }
     
-    fn can_coerce_to(&self, expected: &Type) -> bool {
+    fn can_coerce_to(&self, module: &ModuleScope, expected: &Type) -> Result<bool, AnalysisError> {
         match (expected, self) {
-            (expected, found) if expected == found => true,
+            (Self::Path(expected), Self::Path(found)) => Ok(module.make_path_absolute(expected.clone())? == module.make_path_absolute(found.clone())?),
+            (expected, found) if expected == found => Ok(true),
             (Type::Reference { inner: expected_inner, mutable: false }, Type::Reference { inner: found_inner, mutable: true }) 
-                => found_inner.can_coerce_to(expected_inner),
-            _ => false,
+                => found_inner.can_coerce_to(module, expected_inner),
+            _ => Ok(false),
         }
     }
 }
@@ -381,18 +385,18 @@ impl Expression {
         }
     }
 
-    fn coerce_to(self, expected: &Type, mutable: bool) -> Result<Expression, AnalysisError> {
+    fn coerce_to(self, module: &ModuleScope, expected: &Type, mutable: bool) -> Result<Expression, AnalysisError> {
         if mutable && !self.mutable {
             return Err(AnalysisError::ExpectedMutableValue { value: self })
         }
         
-        if self.type_.can_coerce_to(expected) {
+        if self.type_.can_coerce_to(module, expected)? {
             return Ok(self)
         }
 
         match (self.type_.clone(), expected) {
             (found, Type::Reference { inner, mutable: false }) => {
-                let new = self.coerce_to(inner, mutable)?;
+                let new = self.coerce_to(module, inner, mutable)?;
                 Ok(Expression {
                     data: ExpressionData::Unary { operator: UnaryOperator::Ref, argument: Box::new(new) },
                     mutable: false,
@@ -404,18 +408,18 @@ impl Expression {
         }
     }
     
-    fn coerce_to_mutable(self, expected: &Type, mutable: bool) -> Result<Expression, AnalysisError> {
+    fn coerce_to_mutable(self, module: &ModuleScope, expected: &Type, mutable: bool) -> Result<Expression, AnalysisError> {
         if mutable && !self.mutable {
             return Err(AnalysisError::ExpectedMutableValue { value: self })
         }
         
-        if self.type_.can_coerce_to(expected) {
+        if self.type_.can_coerce_to(module, expected)? {
             return Ok(self)
         }
 
         match (self.type_.clone(), expected) {
             (found, Type::Reference { inner, mutable: ref_is_mut }) => {
-                let new = self.coerce_to_mutable(inner, mutable)?;
+                let new = self.coerce_to_mutable(module, inner, mutable)?;
                 Ok(Expression {
                     data: ExpressionData::Unary { operator: UnaryOperator::Ref, argument: Box::new(new) },
                     mutable: false,
@@ -444,7 +448,6 @@ pub enum TypeKind {
 
 #[derive(Clone, Debug)]
 pub struct TypeDefinition {
-    pub(crate) path: Vec<String>,
     pub(crate) kind: TypeKind,
     binary_operations: HashMap<BinaryOperator, HashMap<Type, Type>>,
     unary_operations: HashMap<UnaryOperator, Type>,
@@ -612,7 +615,7 @@ impl FunctionScope {
                 let lhs_ty = lhs.type_lhs(self, module)?;
 
                 let rhs = self.type_expression(module, rhs, false)?
-                    .coerce_to(&lhs_ty, false)?;
+                    .coerce_to(module, &lhs_ty, false)?;
 
                 Ok(Statement::Assignment { lhs, rhs })
             }
@@ -624,7 +627,7 @@ impl FunctionScope {
                 for (condition, body) in conditions_and_bodies {
                     // TODO: invalidate variables that may not exist (let var = ... in if block)
                     let typed_condition = self.type_expression(module, condition, false)?
-                        .coerce_to(&type_!(bool), false)?;
+                        .coerce_to(module, &type_!(bool), false)?;
 
                     let mut inner = vec![];
                     for stmt in body {
@@ -653,7 +656,7 @@ impl FunctionScope {
             }
             ast::Statement::While { condition, body } => {
                 let condition = self.type_expression(module, condition, false)?
-                    .coerce_to(&type_!(bool), false)?;
+                    .coerce_to(module, &type_!(bool), false)?;
 
                 let mut inner = vec![];
                 for stmt in body {
@@ -670,7 +673,7 @@ impl FunctionScope {
                     Some(expr) => {
                         Some(
                             self.type_expression(module, expr, false)?
-                                .coerce_to(&self.head.return_type, false)?
+                                .coerce_to(module, &self.head.return_type, false)?
                         )
                     }
                     None => {
@@ -688,7 +691,7 @@ impl FunctionScope {
             | ast::Statement::ExternFunctionDeclaration { .. }
             | ast::Statement::ExternBlock { .. }
             | ast::Statement::StructDeclaration { .. }
-            | ast::Statement::Import(_)) => Err(AnalysisError::StatementInWrongContext {
+            | ast::Statement::Import { .. }) => Err(AnalysisError::StatementInWrongContext {
                 statement: other,
                 found_context: "function body",
             }),
@@ -746,7 +749,7 @@ impl FunctionScope {
                         let rtypedef = module.get_type(rtype)?;
 
                         Ok(
-                            match ltypedef.apply_binary(operator, Type::Path(rtypedef.path.clone()))
+                            match ltypedef.apply_binary(operator, Type::Path(rtype.clone()))
                             {
                                 Some(type_) => Expression {
                                     data: ExpressionData::Binary {
@@ -891,7 +894,7 @@ impl FunctionScope {
                                 // TODO: ownership
                                 let should_be_mutable = expected.1.mutability_hint();
 
-                                let found = found.coerce_to(&expected.1, should_be_mutable)?;
+                                let found = found.coerce_to(module, &expected.1, should_be_mutable)?;
 
                                 typed_args.push(found)
                             }
@@ -913,14 +916,14 @@ impl FunctionScope {
 
                         typed_args.push(
                             self.type_expression(module, found, should_be_mutable)?
-                                .coerce_to(&expected.1, should_be_mutable)?
+                                .coerce_to(module, &expected.1, should_be_mutable)?
                         )
                     }
                 }
 
                 Ok(Expression {
                     data: ExpressionData::FunctionCall {
-                        function: module.make_path_absolute(function_name)?,
+                        function: function_name,
                         arguments: typed_args,
                     },
                     type_: function.return_type.clone(),
@@ -945,7 +948,7 @@ impl FunctionScope {
 
                 let (_, receiver_type) = func_args_iter.next().expect("methods always have at least one parameter");
 
-                typed_args.push(instance.coerce_to_mutable(receiver_type, receiver_type.mutability_hint())?);
+                typed_args.push(instance.coerce_to_mutable(module, receiver_type, receiver_type.mutability_hint())?);
 
                 for (expected, found) in std::iter::zip(func_args_iter, arguments) {
                     // TODO: ownership
@@ -953,7 +956,7 @@ impl FunctionScope {
 
                     typed_args.push(
                         self.type_expression(module, found, should_be_mutable)?
-                            .coerce_to(&expected.1, should_be_mutable)?
+                            .coerce_to(module, &expected.1, should_be_mutable)?
                     )
                 }
 
@@ -1030,7 +1033,7 @@ impl FunctionScope {
                             typed_members.insert(
                                 m_name, 
                                 self.type_expression(module, value, maybe_mutable)?
-                                    .coerce_to(&m_type, maybe_mutable)?
+                                    .coerce_to(module, &m_type, maybe_mutable)?
                             );
                         }
 
@@ -1043,10 +1046,10 @@ impl FunctionScope {
 
                         Ok(Expression {
                             data: ExpressionData::StructInit {
-                                path: ty.path.clone(),
+                                path: path.clone(),
                                 members: typed_members,
                             },
-                            type_: Type::Path(ty.path.clone()),
+                            type_: Type::Path(path.clone()),
                             mutable: true
                         })
                     }
@@ -1073,7 +1076,7 @@ pub(crate) enum ResourceKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum Visibility {
+pub enum Visibility {
     Public,
     Module,
     // internal visibility for unrestricted resource access
@@ -1091,12 +1094,6 @@ impl Default for Visibility {
 pub(crate) struct Resource {
     pub kind: ResourceKind,
     pub visibility: Visibility
-}
-
-impl From<ResourceKind> for Resource {
-    fn from(kind: ResourceKind) -> Self {
-        Resource { kind, visibility: Default::default() }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -1130,6 +1127,7 @@ impl ModuleScope {
                     arguments,
                     body,
                     is_variadic,
+                    visibility
                 } => {
 
                     match kind {
@@ -1174,7 +1172,7 @@ impl ModuleScope {
                             let func = FunctionScope::new(body, head.clone());
         
                             self.resources
-                                .insert(name.clone(), ResourceKind::Function(head).into());
+                                .insert(name.clone(), Resource { kind: ResourceKind::Function(head), visibility });
                             self.declared_functions.insert(name.clone(), func);
         
                             self.statements
@@ -1216,6 +1214,7 @@ impl ModuleScope {
                                 arguments,
                                 return_type,
                                 is_variadic,
+                                visibility,
                             } => {
 
                                 let mut typed_arguments = vec![];
@@ -1242,7 +1241,7 @@ impl ModuleScope {
                                     is_variadic: Some(is_variadic),
                                 };
 
-                                self.resources.insert(name, ResourceKind::Function(func).into());
+                                self.resources.insert(name, Resource { kind: ResourceKind::Function(func), visibility });
                             }
                             _ => unreachable!(
                                 "extern blocks should only contain body-less function declarations"
@@ -1252,7 +1251,7 @@ impl ModuleScope {
 
                     self.externs.push(source)
                 }
-                ast::Statement::StructDeclaration { name, members } => {
+                ast::Statement::StructDeclaration { name, members, visibility } => {
                     let mut typed_members = HashMap::new();
                     for (m_name, m_type) in members {
                         if typed_members.contains_key(&m_name) {
@@ -1273,20 +1272,22 @@ impl ModuleScope {
 
                     self.resources.insert(
                         name.clone(),
-                        ResourceKind::Type(TypeDefinition {
-                            path,
-                            kind: TypeKind::Struct {
-                                members: typed_members,
-                            },
-                            // TODO: operator overloading
-                            // (or at least provide a default internal implementation for `==`)
-                            binary_operations: HashMap::new(),
-                            unary_operations: HashMap::new(),
-                        }).into()
+                        Resource { 
+                            kind: ResourceKind::Type(TypeDefinition {
+                                kind: TypeKind::Struct {
+                                    members: typed_members,
+                                },
+                                // TODO: operator overloading
+                                // (or at least provide a default internal implementation for `==`)
+                                binary_operations: HashMap::new(),
+                                unary_operations: HashMap::new(),
+                            }),
+                            visibility
+                        }
                     );
                     self.statements.push(Statement::StructDeclaration { name })
                 }
-                ast::Statement::Import(kind) => match kind {
+                ast::Statement::Import { kind, visibility } => match kind {
                     ast::Import::Absolute(path) => {
                         if self.get_local_resource(&path[..=0], Visibility::Module).is_ok() {
                             return Err(AnalysisError::ResourceShadowing { path })
@@ -1294,10 +1295,10 @@ impl ModuleScope {
 
                         self.resources.insert(path.last().expect("path is not empty").clone(), Resource {
                             kind: ResourceKind::Alias(path),
-                            visibility: Visibility::Module 
+                            visibility 
                         });
                     },
-                    ast::Import::Relative(name) => self.add_submodule(name)?,
+                    ast::Import::Relative(name) => self.add_submodule(name, visibility)?,
                 },
                 other @ (ast::Statement::Expression(_)
                 | ast::Statement::If { .. }
@@ -1316,7 +1317,7 @@ impl ModuleScope {
         Ok(())
     }
 
-    fn add_submodule(&mut self, end: String) -> Result<(), AnalysisError> {
+    fn add_submodule(&mut self, end: String, visibility: Visibility) -> Result<(), AnalysisError> {
         let mut submodule = self.child(end.clone())?;
 
         submodule.declaration_pass()?;
@@ -1324,7 +1325,7 @@ impl ModuleScope {
         self.statements
             .push(Statement::Import(end.clone()));
 
-        self.resources.insert(end, ResourceKind::Module(submodule).into());
+        self.resources.insert(end, Resource { kind: ResourceKind::Module(submodule), visibility });
 
         Ok(())
     }
@@ -1374,12 +1375,23 @@ impl ModuleScope {
 
         for name in path_iter {
             match module.resources.get(name) {
-                Some(Resource {kind: ResourceKind::Alias(path), visibility: vis}) if vis <= &visibility => {
-                    if let ResourceKind::Module(m) = get_global_resource(path, Visibility::Public)? {
+                Some(Resource {kind: ResourceKind::Alias(res_path), visibility: vis}) => {
+                    if vis <= &visibility {
+                        if let ResourceKind::Module(m) = get_global_resource(res_path, Visibility::Public)? {
+                            module = m
+                        }
+                    } else {
+                        return Err(AnalysisError::PrivateResource { path: Vec::from(path) })
+                    }
+                    
+                },
+                Some(Resource {kind: ResourceKind::Module(m), visibility: vis}) => {
+                    if vis <= &visibility {
                         module = m
+                    } else {
+                        return Err(AnalysisError::PrivateResource { path: Vec::from(path) })
                     }
                 },
-                Some(Resource {kind: ResourceKind::Module(m), visibility: vis}) if vis <= &visibility => module = m,
                 _ => return Err(AnalysisError::UnknownResource(Vec::from(path)))
             }
 
@@ -1392,7 +1404,13 @@ impl ModuleScope {
         }
         
         return match module.resources.get(end) {
-            Some(Resource { kind, visibility: vis }) if *vis <= visibility => Ok(kind),
+            Some(Resource { kind, visibility: vis }) => {
+                if *vis <= visibility {
+                    Ok(kind)
+                } else {
+                    Err(AnalysisError::PrivateResource { path: Vec::from(path) })
+                }
+            },
             _ => Err(AnalysisError::UnknownResource(Vec::from(path)))
         }
     }
@@ -1600,7 +1618,7 @@ impl ModuleScope {
     fn _analyse_new_type(&self, ty: ast::Type) -> Result<Type, AnalysisError> {
         Ok(match ty {
             ast::Type::Void => Type::Void,
-            ast::Type::Path(path) => Type::Path(self.make_path_absolute(path)?),
+            ast::Type::Path(path) => Type::Path(path),
             ast::Type::Reference{inner, mutable} => Type::Reference{
                 inner: Box::new(self._analyse_new_type(*inner)?),
                 mutable
@@ -1623,7 +1641,7 @@ impl ModuleScope {
         Ok(match ty {
             ast::Type::Void => Type::Void,
             ast::Type::Path(name) => {
-                Type::Path(self.make_path_absolute(self.get_type(&name).map(|_| name)?)?)
+                Type::Path(self.get_type(&name).map(|_| name)?)
             }
             ast::Type::Reference { inner, mutable } => Type::Reference {
                 inner: Box::new(self.analyse_type(*inner)?),
@@ -1648,6 +1666,8 @@ impl ModuleScope {
 
         let mut path_iter = path.iter();
         let end = path_iter.next_back().expect("path is not empty").clone();
+
+        let _ = self.path.iter().zip(&mut path_iter).map_while(|(x, y)| (x == y).then_some(())).count();
 
         for name in path_iter {
 

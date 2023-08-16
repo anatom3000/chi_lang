@@ -1,13 +1,13 @@
 import modules.utils
 
-import .point
+pub import .point
 
-def add(a: int, b: int) -> int {
+pub def add(a: int, b: int) -> int {
     utils.printf("Adding %i and %i\n", a, b)
 
     return a + b
 }
 
-def mul(a: int, b: int) -> int {
+pub def mul(a: int, b: int) -> int {
     return a * b
 }

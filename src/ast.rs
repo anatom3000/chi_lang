@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::lexer::TokenData;
+use crate::{lexer::TokenData, analysis::Visibility};
 
 #[derive(Debug, Clone)]
 pub enum Literal {
@@ -91,6 +91,7 @@ pub enum Statement {
         rhs: Expression,
     },
     FunctionDeclaration {
+        visibility: Visibility,
         kind: FunctionKind,
         arguments: Vec<(String, Type)>,
         return_type: Type,
@@ -102,6 +103,7 @@ pub enum Statement {
         body: Vec<Statement>,
     },
     StructDeclaration {
+        visibility: Visibility,
         name: String,
         members: HashMap<String, Type>,
     },
@@ -110,6 +112,7 @@ pub enum Statement {
         arguments: Vec<(String, Type)>,
         return_type: Type,
         is_variadic: bool,
+        visibility: Visibility,
     },
     If {
         conditions_and_bodies: Vec<(Expression, Vec<Statement>)>,
@@ -120,7 +123,10 @@ pub enum Statement {
         body: Vec<Statement>,
     },
     Return(Option<Expression>),
-    Import(Import),
+    Import {
+        kind: Import,
+        visibility: Visibility,
+    },
 }
 
 #[derive(Debug, Clone)]

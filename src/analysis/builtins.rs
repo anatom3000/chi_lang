@@ -18,8 +18,7 @@ macro_rules! num_type {
         let path = vec![stringify!($self).to_string()];
 
 
-        (path.clone(), ResourceKind::Type(TypeDefinition {
-            path,
+        (path, ResourceKind::Type(TypeDefinition {
             kind: TypeKind::Primitive,
             binary_operations: HashMap::from([
                 (BinaryOperator::Plus, results.clone()),
@@ -51,8 +50,7 @@ macro_rules! num_type {
         let path = vec![stringify!($self).to_string()];
 
 
-        (path.clone(), ResourceKind::Type(TypeDefinition {
-            path,
+        (path, ResourceKind::Type(TypeDefinition {
             kind: TypeKind::Primitive,
             binary_operations: HashMap::from([
                 (BinaryOperator::Plus, results.clone()),
@@ -110,7 +108,6 @@ lazy_static! {
         (
             vec!["bool".to_string()],
             ResourceKind::Type(TypeDefinition {
-                path: vec!["bool".to_string()],
                 kind: TypeKind::Primitive,
                 binary_operations: HashMap::from([(
                     BinaryOperator::Equal,
@@ -122,7 +119,6 @@ lazy_static! {
         (
             vec!["char".to_string()],
             ResourceKind::Type(TypeDefinition {
-                path: vec!["char".to_string()],
                 kind: TypeKind::Primitive,
                 binary_operations: HashMap::new(),
                 unary_operations: HashMap::new()
@@ -131,7 +127,6 @@ lazy_static! {
         (
             vec!["str".to_string()],
             ResourceKind::Type(TypeDefinition {
-                path: vec!["char".to_string()],
                 kind: TypeKind::Primitive,
                 binary_operations: HashMap::new(),
                 unary_operations: HashMap::new()
