@@ -1,4 +1,4 @@
-use std::{fs, io, path::PathBuf, process::Command};
+use std::{fs, io, path::PathBuf, process::Command, fmt::Debug};
 
 use crate::TranspileError;
 

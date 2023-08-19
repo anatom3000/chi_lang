@@ -54,7 +54,7 @@ thread_local! {
 }
 
 
-pub(crate) fn get_global_resource(path: &[String], visibility: Visibility) -> Result<&ResourceKind, AnalysisError> {
+pub(crate) fn get_global_resource<'a, 'b>(path: &'a [String], visibility: Visibility) -> Result<&'b ResourceKind, AnalysisError> {
     PACKAGES.with(|p| 
         p.get_res(&path[0])
         .ok_or_else(|| AnalysisError::UnknownResource(Vec::from(path)))
@@ -132,9 +132,6 @@ pub enum AnalysisError {
         struct_name: String,
         duplicated_member: String,
     },
-    NonStructInit {
-        found: Type,
-    },
     MissingMemberInInit {
         struct_name: Vec<String>,
         missing: String,
@@ -168,6 +165,21 @@ pub enum AnalysisError {
     },
     PrivateResource {
         path: Vec<String>,
+    },
+    NotAStruct {
+        found: Type,
+    }
+}
+
+impl AnalysisError {
+    fn with_member(self, member: String) -> Self {
+        match self {
+            AnalysisError::NotAStruct { found } => AnalysisError::MemberAccessOnNonStruct {
+                instance_type: found,
+                member: member,
+            },
+            e => e
+        }
     }
 }
 
@@ -260,7 +272,7 @@ impl Type {
     
     fn can_coerce_to(&self, module: &ModuleScope, expected: &Type) -> Result<bool, AnalysisError> {
         match (expected, self) {
-            (Self::Path(expected), Self::Path(found)) => Ok(module.make_path_absolute(expected.clone())? == module.make_path_absolute(found.clone())?),
+            (Self::Path(expected), Self::Path(found)) => Ok(expected == found),
             (expected, found) if expected == found => Ok(true),
             (Type::Reference { inner: expected_inner, mutable: false }, Type::Reference { inner: found_inner, mutable: true }) 
                 => found_inner.can_coerce_to(module, expected_inner),
@@ -346,15 +358,8 @@ impl Expression {
                 },
             },
             ExpressionData::StructMember { instance, member } => {
-                let instance_type = module.get_type(match &instance.type_ {
-                    Type::Path(path) => path,
-                    _ => {
-                        return Err(AnalysisError::MemberAccessOnNonStruct {
-                            instance_type: instance.type_.clone(),
-                            member: member.clone(),
-                        })
-                    }
-                })?;
+                let instance_type = module.get_named_type(&instance.type_)
+                    .map_err(|e| e.with_member(member.clone()))?;
 
                 match instance_type.kind {
                     TypeKind::Struct { ref members } => Ok(members
@@ -921,9 +926,11 @@ impl FunctionScope {
                     }
                 }
 
+                let path = module.make_path_absolute(function_name)?;
+
                 Ok(Expression {
                     data: ExpressionData::FunctionCall {
-                        function: function_name,
+                        function: path,
                         arguments: typed_args,
                     },
                     type_: function.return_type.clone(),
@@ -981,37 +988,33 @@ impl FunctionScope {
             ast::Expression::StructMember { instance, member } => {
                 let instance = self.type_expression(module, *instance, maybe_mutable)?;
 
-                match instance.type_.clone() {
-                    Type::Path(path) => match module.get_type(&path)?.kind.clone() {
-                        TypeKind::Struct { members } => {
-                            // get the type of the member if it exists, otherwise return an error
-                            let member_type = members
-                                .get(&member)
-                                .ok_or(AnalysisError::UnknownMember {
-                                    instance_type: instance.type_.clone(),
-                                    member: member.clone(),
-                                })?
-                                .clone();
+                match module.get_named_type(&instance.type_)
+                        .map_err(|e| e.with_member(member.clone()))?.kind.clone() {
+                    TypeKind::Struct { members } => {
+                        // get the type of the member if it exists, otherwise return an error
+                        let member_type = members
+                            .get(&member)
+                            .ok_or(AnalysisError::UnknownMember {
+                                instance_type: instance.type_.clone(),
+                                member: member.clone(),
+                            })?
+                            .clone();
 
-                            Ok(Expression {
-                                mutable: instance.mutable,
-                                data: ExpressionData::StructMember {
-                                    instance: Box::new(instance),
-                                    member,
-                                },
-                                type_: member_type,
-                            })
-                        }
-                        _ => Err(AnalysisError::MemberAccessOnNonStruct {
-                            instance_type: instance.type_,
-                            member,
-                        }),
-                    },
+                        Ok(Expression {
+                            mutable: instance.mutable,
+                            data: ExpressionData::StructMember {
+                                instance: Box::new(instance),
+                                member,
+                            },
+                            type_: member_type,
+                        })
+                    }
                     _ => todo!("member access for reference types"),
                 }
             }
             ast::Expression::StructInit { path, mut members } => {
                 let ty = module.get_type(&path)?;
+                let path = module.make_path_absolute(path)?;
                 match ty.kind.clone() {
                     TypeKind::Struct {
                         members: decl_members,
@@ -1053,7 +1056,7 @@ impl FunctionScope {
                             mutable: true
                         })
                     }
-                    _ => Err(AnalysisError::NonStructInit {
+                    _ => Err(AnalysisError::NotAStruct {
                         found: Type::Path(path),
                     }),
                 }
@@ -1159,9 +1162,10 @@ impl ModuleScope {
                             }
                             
                             let path = vec![name.clone()];
-                            if self.get_resource(&path).is_ok() {
-                                return Err(AnalysisError::ResourceShadowing { path })
-                            }
+                            // UNCOM
+                            // if self.get_resource(&path).is_ok() {
+                            //     return Err(AnalysisError::ResourceShadowing { path })
+                            // }
         
                             let head: FunctionHead = FunctionHead {
                                 return_type,
@@ -1229,11 +1233,14 @@ impl ModuleScope {
 
                                 let return_type = self.analyse_type(return_type)?;
 
-                                let path = self.make_path_absolute(vec![name.clone()])?;
+                                let path = vec![name.clone()];
 
-                                if self.get_resource(&path).is_ok() {
-                                    return Err(AnalysisError::ResourceShadowing { path })
-                                }
+                                // UNCOM
+                                // if self.get_resource(&path).is_ok() {
+                                //     return Err(AnalysisError::ResourceShadowing { path })
+                                // }
+
+                                let path = self.make_path_absolute(path);
 
                                 let func = FunctionHead {
                                     return_type,
@@ -1264,11 +1271,14 @@ impl ModuleScope {
                         typed_members.insert(m_name, self.analyse_type(m_type)?);
                     }
 
-                    let path = self.make_path_absolute(vec![name.clone()])?;
+                    let path = vec![name.clone()];
 
-                    if self.get_resource(&path).is_ok() {
-                        return Err(AnalysisError::ResourceShadowing { path })
-                    }
+                    // UNCOM
+                    // if self.get_resource(&path).is_ok() {
+                    //     return Err(AnalysisError::ResourceShadowing { path })
+                    // }
+
+                    let path = self.make_path_absolute(path)?;
 
                     self.resources.insert(
                         name.clone(),
@@ -1367,7 +1377,6 @@ impl ModuleScope {
     }
 
     fn get_local_resource(&self, path: &[String], mut visibility: Visibility) -> Result<&ResourceKind, AnalysisError> {
-
         let mut module = self;
 
         let mut path_iter = path.iter();
@@ -1376,41 +1385,20 @@ impl ModuleScope {
         for name in path_iter {
             match module.resources.get(name) {
                 Some(Resource {kind: ResourceKind::Alias(res_path), visibility: vis}) => {
-                    if vis <= &visibility {
-                        if let ResourceKind::Module(m) = get_global_resource(res_path, Visibility::Public)? {
-                            module = m
-                        }
-                    } else {
-                        return Err(AnalysisError::PrivateResource { path: Vec::from(path) })
+                    if let ResourceKind::Module(m) = get_global_resource(res_path, Visibility::Public)? {
+                        module = m
                     }
                     
                 },
                 Some(Resource {kind: ResourceKind::Module(m), visibility: vis}) => {
-                    if vis <= &visibility {
-                        module = m
-                    } else {
-                        return Err(AnalysisError::PrivateResource { path: Vec::from(path) })
-                    }
+                    module = m
                 },
                 _ => return Err(AnalysisError::UnknownResource(Vec::from(path)))
-            }
-
-            visibility = match visibility {
-                Visibility::Public => Visibility::Public,
-                // parent modules cannot access the private resources of their child module
-                Visibility::Module => Visibility::Public,
-                Visibility::Bypass => Visibility::Bypass,
             }
         }
         
         return match module.resources.get(end) {
-            Some(Resource { kind, visibility: vis }) => {
-                if *vis <= visibility {
-                    Ok(kind)
-                } else {
-                    Err(AnalysisError::PrivateResource { path: Vec::from(path) })
-                }
-            },
+            Some(Resource { kind, visibility: vis }) => Ok(kind),
             _ => Err(AnalysisError::UnknownResource(Vec::from(path)))
         }
     }
@@ -1423,11 +1411,7 @@ impl ModuleScope {
             }
         }
 
-        if let Ok(res) = self.get_local_resource(path, Visibility::Module) {
-            return Ok(res);
-        }
-
-        return get_global_resource(path, Visibility::Public).map(|x: &ResourceKind| unsafe { &*(x as *const _) })
+        self.get_local_resource(path, Visibility::Module).map_err(|e|Err(e).unwrap())
     }
 
     pub(crate) fn get_resource_no_vis(&self, path: &Vec<String>) -> Result<&ResourceKind, AnalysisError> {
@@ -1450,15 +1434,9 @@ impl ModuleScope {
         instance: Expression,
         path: &[String],
     ) -> Result<Expression, AnalysisError> {
-        let typedef = match &instance.type_ {
-            Type::Path(path) => self.get_type(path)?,
-            _ => {
-                return Err(AnalysisError::MemberAccessOnNonStruct {
-                    instance_type: instance.type_.clone(),
-                    member: path[0].clone(),
-                })
-            }
-        };
+        let typedef = self.get_named_type(&instance.type_)
+            .map_err(|e| e.with_member(path[0].clone()))?;
+
         match &typedef.kind {
             TypeKind::Struct { members } => match members.get(&path[0]) {
                 Some(member) => {
@@ -1508,6 +1486,21 @@ impl ModuleScope {
         match self.get_resource(path)? {
             ResourceKind::Type(ty) => Ok(ty),
             _ => Err(AnalysisError::UnknownType(path.clone())),
+        }
+    }
+
+    pub fn get_named_type(&self, type_: &Type) -> Result<&TypeDefinition, AnalysisError> {
+        match type_ {
+            Type::Path(path) => {
+                if let ResourceKind::Type(ty) = get_global_resource(path, Visibility::Bypass)? {
+                    Ok(ty)
+                } else {
+                    Err(AnalysisError::UnknownType(path.clone()))
+                }
+            },
+            _ => Err(AnalysisError::NotAStruct {
+                found: type_.clone()
+            })
         }
     }
 
@@ -1615,33 +1608,12 @@ impl ModuleScope {
         })
     }
 
-    fn _analyse_new_type(&self, ty: ast::Type) -> Result<Type, AnalysisError> {
-        Ok(match ty {
-            ast::Type::Void => Type::Void,
-            ast::Type::Path(path) => Type::Path(path),
-            ast::Type::Reference{inner, mutable} => Type::Reference{
-                inner: Box::new(self._analyse_new_type(*inner)?),
-                mutable
-            },
-            // Type::Array { base, size } => Type::Array { base: Box::new(self.analyse_new_type(*base)), size },
-            // Type::Function { return_type, arguments } => {
-            //     let return_type = match *return_type {
-            //         Some(ty) => self.analyse_new_type(ty),
-            //         None => Type::Void
-            //     };
-            //
-            //     let arguments = arguments.into_iter().map(|ty| self.analyse_new_type(ty)).collect();
-            //
-            //     Type::Function { return_type: Box::new(return_type), arguments }
-            // }
-        })
-    }
-
     fn analyse_type(&self, ty: ast::Type) -> Result<Type, AnalysisError> {
         Ok(match ty {
             ast::Type::Void => Type::Void,
             ast::Type::Path(name) => {
-                Type::Path(self.get_type(&name).map(|_| name)?)
+                self.get_type(&name)?;
+                Type::Path(self.make_path_absolute(name)?)
             }
             ast::Type::Reference { inner, mutable } => Type::Reference {
                 inner: Box::new(self.analyse_type(*inner)?),
@@ -1667,7 +1639,6 @@ impl ModuleScope {
         let mut path_iter = path.iter();
         let end = path_iter.next_back().expect("path is not empty").clone();
 
-        let _ = self.path.iter().zip(&mut path_iter).map_while(|(x, y)| (x == y).then_some(())).count();
 
         for name in path_iter {
 
@@ -1703,8 +1674,7 @@ impl ModuleScope {
             let mut absolute = self.path.clone();
             absolute.append(&mut path);
             Ok(absolute)
-        }
-                
+        }       
     }
 
     fn type_literal(&self, value: Literal) -> Result<Expression, AnalysisError> {
