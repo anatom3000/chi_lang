@@ -54,7 +54,7 @@ thread_local! {
 }
 
 
-pub(crate) fn get_global_resource<'a, 'b>(path: &'a [String], visibility: Visibility) -> Result<&'b ResourceKind, AnalysisError> {
+pub(crate) fn get_global_resource<'a, 'b>(path: &'a [String], from: Option<&[String]>) -> Result<&'b ResourceKind, AnalysisError> {
     PACKAGES.with(|p| 
         p.get_res(&path[0])
         .ok_or_else(|| AnalysisError::UnknownResource(Vec::from(path)))
@@ -63,8 +63,8 @@ pub(crate) fn get_global_resource<'a, 'b>(path: &'a [String], visibility: Visibi
                 Ok(m)
             } else {
                 match m {
-                    ResourceKind::Module(m) => m.get_local_resource(&path[1..], visibility),
-                    _ => unreachable!("resources stored in global package should a module")
+                    ResourceKind::Module(m) => m.get_local_resource(&path[1..], from),
+                    _ => unreachable!("resources stored in global package are modules")
                 }
             }
             
@@ -1082,8 +1082,6 @@ pub(crate) enum ResourceKind {
 pub enum Visibility {
     Public,
     Module,
-    // internal visibility for unrestricted resource access
-    Bypass,
 }
 
 impl Default for Visibility {
@@ -1096,6 +1094,7 @@ impl Default for Visibility {
 #[derive(Clone, Debug)]
 pub(crate) struct Resource {
     pub kind: ResourceKind,
+    #[allow(dead_code)]
     pub visibility: Visibility
 }
 
@@ -1239,8 +1238,6 @@ impl ModuleScope {
                                     return Err(AnalysisError::ResourceShadowing { path })
                                 }
 
-                                let path = self.make_path_absolute(path);
-
                                 let func = FunctionHead {
                                     return_type,
                                     arguments: typed_arguments,
@@ -1276,8 +1273,6 @@ impl ModuleScope {
                         return Err(AnalysisError::ResourceShadowing { path })
                     }
 
-                    let path = self.make_path_absolute(path)?;
-
                     self.resources.insert(
                         name.clone(),
                         Resource { 
@@ -1297,7 +1292,7 @@ impl ModuleScope {
                 }
                 ast::Statement::Import { kind, visibility } => match kind {
                     ast::Import::Absolute(path) => {
-                        if self.get_local_resource(&path[..=0], Visibility::Module).is_ok() {
+                        if self.get_resource(&path[path.len()-1..]).is_ok() {
                             return Err(AnalysisError::ResourceShadowing { path })
                         }
 
@@ -1364,7 +1359,7 @@ impl ModuleScope {
                     m.execution_pass()?;
                 },
                 ResourceKind::Alias(path) => {
-                    let _ = get_global_resource(&path, Visibility::Public);
+                    get_global_resource(&path, Some(&self.path))?;
                 },
                 _ => {}
 
@@ -1374,34 +1369,46 @@ impl ModuleScope {
         Ok(())
     }
 
-    fn get_local_resource(&self, path: &[String], mut visibility: Visibility) -> Result<&ResourceKind, AnalysisError> {
+    fn get_local_resource(&self, path: &[String], from: Option<&[String]>) -> Result<&ResourceKind, AnalysisError> {
         let mut module = self;
 
         let mut path_iter = path.iter();
         let end = path_iter.next_back().expect("path is not empty");
 
+        let required_visibility = Visibility::Public;
+
         for name in path_iter {
             match module.resources.get(name) {
-                Some(Resource {kind: ResourceKind::Alias(res_path), visibility: vis}) => {
-                    if let ResourceKind::Module(m) = get_global_resource(res_path, Visibility::Public)? {
-                        module = m
+                Some(Resource {kind: ResourceKind::Alias(res_path), visibility: _}) => {
+                    if let ResourceKind::Module(m) = get_global_resource(res_path, from)? {
+                        module = m;
+                    } else {
+                        return Err(AnalysisError::UnknownResource(Vec::from(path)))
                     }
-                    
                 },
-                Some(Resource {kind: ResourceKind::Module(m), visibility: vis}) => {
-                    module = m
+                Some(Resource {kind: ResourceKind::Module(m), visibility: _}) => {
+                    module = m;
                 },
                 _ => return Err(AnalysisError::UnknownResource(Vec::from(path)))
             }
         }
         
-        return match module.resources.get(end) {
-            Some(Resource { kind, visibility: vis }) => Ok(kind),
-            _ => Err(AnalysisError::UnknownResource(Vec::from(path)))
+        let resource = match module.resources.get(end) {
+            Some(Resource { kind, visibility: _ }) => kind,
+            _ => return Err(AnalysisError::UnknownResource(Vec::from(path)))
+        };
+
+        // TODO: visibility
+        match (required_visibility, from) {
+            (_, None) => Ok(resource),
+            (Visibility::Public, _) => Ok(resource),
+            (Visibility::Module, Some(_from)) => {
+                Ok(resource)
+            }
         }
     }
 
-    pub(crate) fn get_resource(&self, path: &Vec<String>) -> Result<&ResourceKind, AnalysisError> {
+    pub(crate) fn get_resource(&self, path: &[String]) -> Result<&ResourceKind, AnalysisError> {
 
         if path.len() == 1 {
             if let Some(res) = builtins::TYPES.get(path) {
@@ -1409,22 +1416,7 @@ impl ModuleScope {
             }
         }
 
-        self.get_local_resource(path, Visibility::Module)
-    }
-
-    pub(crate) fn get_resource_no_vis(&self, path: &Vec<String>) -> Result<&ResourceKind, AnalysisError> {
-
-        if path.len() == 1 {
-            if let Some(res) = builtins::TYPES.get(path) {
-                return Ok(res);
-            }
-        }
-
-        if let Ok(res) = self.get_local_resource(path, Visibility::Bypass) {
-            return Ok(res);
-        }
-
-        return get_global_resource(path, Visibility::Bypass).map(|x| unsafe { &*(x as *const _) })
+        self.get_local_resource(path, Some(&self.path))
     }
 
     pub(crate) fn get_struct_member(
@@ -1490,7 +1482,7 @@ impl ModuleScope {
     pub fn get_named_type(&self, type_: &Type) -> Result<&TypeDefinition, AnalysisError> {
         match type_ {
             Type::Path(path) => {
-                if let ResourceKind::Type(ty) = get_global_resource(path, Visibility::Bypass)? {
+                if let ResourceKind::Type(ty) = get_global_resource(path, None)? {
                     Ok(ty)
                 } else {
                     Err(AnalysisError::UnknownType(path.clone()))
@@ -1642,7 +1634,7 @@ impl ModuleScope {
 
             match module.resources.get(name) {
                 Some(Resource {kind: ResourceKind::Alias(path), ..}) => {
-                    if let ResourceKind::Module(m) = get_global_resource(&path, Visibility::Bypass)? {
+                    if let ResourceKind::Module(m) = get_global_resource(&path, None)? {
                         absolute.clear();
                         absolute.append(&mut path.clone());
                         module = m

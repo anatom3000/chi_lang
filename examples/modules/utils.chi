@@ -1,5 +1,5 @@
 import modules.math
 
 extern "<stdio.h>" {
-    pub def printf(fmt_str: str, ...)
+    def printf(fmt_str: str, ...)
 }

@@ -1,7 +1,7 @@
 use std::{collections::{HashMap, HashSet}, fmt::Display};
 
 use crate::{
-    analysis::{ExpressionData, ModuleScope, ResourceKind, Statement, Type, TypeKind},
+    analysis::{ExpressionData, ModuleScope, ResourceKind, Statement, Type, TypeKind, get_global_resource},
     ast::Literal,
 };
 
@@ -254,7 +254,7 @@ impl<'a> ModuleTranspiler<'a> {
             }
             ExpressionData::FunctionCall { function, arguments, } => {
 
-                let head = match self.scope.get_resource_no_vis(&function) {
+                let head = match get_global_resource(&function, None) {
                     Ok(ResourceKind::Function(func)) => func,
                     _ => unreachable!("called function exists"),
                 };
