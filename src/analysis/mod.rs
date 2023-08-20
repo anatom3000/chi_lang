@@ -1162,10 +1162,10 @@ impl ModuleScope {
                             }
                             
                             let path = vec![name.clone()];
-                            // UNCOM
-                            // if self.get_resource(&path).is_ok() {
-                            //     return Err(AnalysisError::ResourceShadowing { path })
-                            // }
+                            
+                            if self.get_resource(&path).is_ok() {
+                                return Err(AnalysisError::ResourceShadowing { path })
+                            }
         
                             let head: FunctionHead = FunctionHead {
                                 return_type,
@@ -1235,10 +1235,9 @@ impl ModuleScope {
 
                                 let path = vec![name.clone()];
 
-                                // UNCOM
-                                // if self.get_resource(&path).is_ok() {
-                                //     return Err(AnalysisError::ResourceShadowing { path })
-                                // }
+                                if self.get_resource(&path).is_ok() {
+                                    return Err(AnalysisError::ResourceShadowing { path })
+                                }
 
                                 let path = self.make_path_absolute(path);
 
@@ -1273,10 +1272,9 @@ impl ModuleScope {
 
                     let path = vec![name.clone()];
 
-                    // UNCOM
-                    // if self.get_resource(&path).is_ok() {
-                    //     return Err(AnalysisError::ResourceShadowing { path })
-                    // }
+                    if self.get_resource(&path).is_ok() {
+                        return Err(AnalysisError::ResourceShadowing { path })
+                    }
 
                     let path = self.make_path_absolute(path)?;
 
