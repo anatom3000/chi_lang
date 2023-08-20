@@ -57,7 +57,7 @@ thread_local! {
 pub(crate) fn get_global_resource<'a, 'b>(path: &'a [String], from: Option<&[String]>) -> Result<&'b ResourceKind, AnalysisError> {
     PACKAGES.with(|p| 
         p.get_res(&path[0])
-        .ok_or_else(|| AnalysisError::UnknownResource(Vec::from(path)))
+        .ok_or_else(|| AnalysisError::UnknownResource{path: Vec::from(path), found: None})
         .and_then(|m| {
             if path.len() == 1 {
                 Ok(m)
@@ -78,11 +78,10 @@ pub(crate) fn get_global_resource<'a, 'b>(path: &'a [String], from: Option<&[Str
 pub enum AnalysisError {
     UnknownBinaryOperator(lexer::TokenData),
     UnknownUnaryOperator(lexer::TokenData),
-    UnknownResource(Vec<String>),
-    UnknownFunction(Vec<String>),
-    UnknownVariable(Vec<String>),
-    UnknownType(Vec<String>),
-    UnknownModule(Vec<String>),
+    UnknownResource{
+        path: Vec<String>,
+        found: Option<ResourceKind>,
+    },
     UnsupportedBinaryOperation {
         op: BinaryOperator,
         left: Type,
@@ -439,7 +438,7 @@ impl Expression {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct FunctionHead {
+pub struct FunctionHead {
     pub(crate) return_type: Type,
     pub(crate) arguments: Vec<(String, Type)>,
     pub(crate) is_variadic: Option<bool>,
@@ -498,7 +497,7 @@ pub(crate) enum Statement {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct Variable {
+pub struct Variable {
     type_: Type,
     mutable: bool,
 }
@@ -581,7 +580,7 @@ impl FunctionScope {
                 },
                 &path[1..],
             )?)),
-            None => Err(AnalysisError::UnknownVariable(path.clone())),
+            None => Err(AnalysisError::UnknownResource { path: path.clone(), found: None }),
         }
     }
 
@@ -1069,7 +1068,7 @@ impl FunctionScope {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum ResourceKind {
+pub enum ResourceKind {
     Function(FunctionHead),
     Type(TypeDefinition),
     #[allow(dead_code)] 
@@ -1099,7 +1098,7 @@ pub(crate) struct Resource {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ModuleScope {
+pub struct ModuleScope {
     pub(crate) file: PathBuf,
     pub(crate) path: Vec<String>,
     is_main: bool,
@@ -1383,19 +1382,20 @@ impl ModuleScope {
                     if let ResourceKind::Module(m) = get_global_resource(res_path, from)? {
                         module = m;
                     } else {
-                        return Err(AnalysisError::UnknownResource(Vec::from(path)))
+                        return Err(AnalysisError::UnknownResource{ path: Vec::from(path), found: None })
                     }
                 },
                 Some(Resource {kind: ResourceKind::Module(m), visibility: _}) => {
                     module = m;
                 },
-                _ => return Err(AnalysisError::UnknownResource(Vec::from(path)))
+                _ => return Err(AnalysisError::UnknownResource{ path: Vec::from(path), found: None })
             }
         }
         
         let resource = match module.resources.get(end) {
+            Some(Resource { kind: ResourceKind::Alias(res_path), visibility: _ }) => get_global_resource(res_path, from)?,
             Some(Resource { kind, visibility: _ }) => kind,
-            _ => return Err(AnalysisError::UnknownResource(Vec::from(path)))
+            _ => return Err(AnalysisError::UnknownResource{ path: Vec::from(path), found: None })
         };
 
         // TODO: visibility
@@ -1459,7 +1459,7 @@ impl ModuleScope {
     pub(crate) fn get_function(&self, name: &String) -> Result<&FunctionScope, AnalysisError> {
         self.declared_functions
             .get(name)
-            .ok_or(AnalysisError::UnknownFunction(vec![name.clone()]))
+            .ok_or(AnalysisError::UnknownResource { path: vec![name.clone()], found: None })
     }
 
     pub(crate) fn get_function_head(
@@ -1468,14 +1468,14 @@ impl ModuleScope {
     ) -> Result<&FunctionHead, AnalysisError> {
         match self.get_resource(path)? {
             ResourceKind::Function(func) => Ok(func),
-            _ => Err(AnalysisError::UnknownFunction(path.clone())),
+            found => Err(AnalysisError::UnknownResource { path: path.clone(), found: Some(found.clone()) }),
         }
     }
 
     pub fn get_type(&self, path: &Vec<String>) -> Result<&TypeDefinition, AnalysisError> {
         match self.get_resource(path)? {
             ResourceKind::Type(ty) => Ok(ty),
-            _ => Err(AnalysisError::UnknownType(path.clone())),
+            found => Err(AnalysisError::UnknownResource { path: path.clone(), found: Some(found.clone()) }),
         }
     }
 
@@ -1485,7 +1485,7 @@ impl ModuleScope {
                 if let ResourceKind::Type(ty) = get_global_resource(path, None)? {
                     Ok(ty)
                 } else {
-                    Err(AnalysisError::UnknownType(path.clone()))
+                    Err(AnalysisError::UnknownResource { path: path.clone(), found: None })
                 }
             },
             _ => Err(AnalysisError::NotAStruct {
@@ -1578,7 +1578,7 @@ impl ModuleScope {
         } else if multiple_exists {
             multiple_files_module_root
         } else {
-            return Err(AnalysisError::UnknownModule(path));
+            return Err(AnalysisError::UnknownResource { path: path.clone(), found: None })
         };
 
         let source = parser::Parser::from_source(&fs::read_to_string(&file).unwrap())
@@ -1647,23 +1647,35 @@ impl ModuleScope {
                     absolute.push(name.clone());
                     module = m
                 },
-                _ => return Err(AnalysisError::UnknownResource(Vec::from(path)))
+                _ => return Err(AnalysisError::UnknownResource { path: path.clone(), found: None }),
             }
             nonlocal = true;
         }
         
         if nonlocal {
             match module.resources.get(&end) {
+                Some(Resource { kind: ResourceKind::Alias(res_path), .. }) => {
+                    Ok(res_path.clone())
+                },
                 Some(Resource {..}) => {
                     absolute.push(end);
                     Ok(absolute)
                 }
-                _ => return Err(AnalysisError::UnknownResource(Vec::from(path))),
+                _ => return Err(AnalysisError::UnknownResource { path: path.clone(), found: None }),
             }
         } else {
-            let mut absolute = self.path.clone();
-            absolute.append(&mut path);
-            Ok(absolute)
+            match module.resources.get(&end) {
+                Some(Resource { kind: ResourceKind::Alias(res_path), .. }) => {
+                    Ok(res_path.clone())
+                },
+                Some(Resource {..}) => {
+                    let mut absolute = self.path.clone();
+                    absolute.append(&mut path);
+                    Ok(absolute)
+                }
+                _ => return Err(AnalysisError::UnknownResource { path: path.clone(), found: None }),
+            }
+            
         }       
     }
 

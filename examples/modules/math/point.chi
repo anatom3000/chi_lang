@@ -3,9 +3,9 @@ struct Point {
     y: float,
 }
 
-def add(a: Point, b: Point) -> Point {
+def (self: Point).add(other: Point) -> Point {
     return Point {
-        x: a.x + b.x,
-        y: a.y + b.y,
+        x: self.x + other.x,
+        y: self.y + other.y,
     }
 }
