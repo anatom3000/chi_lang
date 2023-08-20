@@ -15,10 +15,10 @@ macro_rules! num_type {
             $( (type_!($smaller), type_!(bool)), )*
         ]);
 
-        let path = vec![stringify!($self).to_string()];
+        let path = stringify!($self).to_string();
 
 
-        (path, ResourceKind::Type(TypeDefinition {
+        (path, vec![ResourceKind::Type(TypeDefinition {
             kind: TypeKind::Primitive,
             binary_operations: HashMap::from([
                 (BinaryOperator::Plus, results.clone()),
@@ -36,7 +36,7 @@ macro_rules! num_type {
                 (UnaryOperator::Minus, type_!($self)),
                 (UnaryOperator::Plus, type_!($self))
             ])
-        }))
+        })])
 
     }};
     (unsigned $self:ident) => {{
@@ -47,10 +47,10 @@ macro_rules! num_type {
             (type_!($self), type_!(bool)),
         ]);
 
-        let path = vec![stringify!($self).to_string()];
+        let path = stringify!($self).to_string();
 
 
-        (path, ResourceKind::Type(TypeDefinition {
+        (path, vec![ResourceKind::Type(TypeDefinition {
             kind: TypeKind::Primitive,
             binary_operations: HashMap::from([
                 (BinaryOperator::Plus, results.clone()),
@@ -67,7 +67,7 @@ macro_rules! num_type {
             unary_operations: HashMap::from([
                 (UnaryOperator::Plus, type_!($self))
             ])
-        }))
+        })])
     }};
 }
 
@@ -94,7 +94,7 @@ macro_rules! type_ {
 }
 
 lazy_static! {
-    pub(super) static ref TYPES: HashMap<Vec<String>, ResourceKind> = HashMap::from([
+    pub(super) static ref BUILTINS: HashMap<String, Vec<ResourceKind>> = HashMap::from([
         num_type!(int; uint),
         num_type!(unsigned uint),
         num_type!(int8;  uint8),
@@ -106,31 +106,31 @@ lazy_static! {
         num_type!(unsigned uint32),
         num_type!(unsigned uint64),
         (
-            vec!["bool".to_string()],
-            ResourceKind::Type(TypeDefinition {
+            "bool".to_string(),
+            vec![ResourceKind::Type(TypeDefinition {
                 kind: TypeKind::Primitive,
                 binary_operations: HashMap::from([(
                     BinaryOperator::Equal,
                     HashMap::from([(type_!(bool), type_!(bool))])
                 )]),
                 unary_operations: HashMap::from([(UnaryOperator::Not, type_!(bool))])
-            })
+            })]
         ),
         (
-            vec!["char".to_string()],
-            ResourceKind::Type(TypeDefinition {
+            "char".to_string(),
+            vec![ResourceKind::Type(TypeDefinition {
                 kind: TypeKind::Primitive,
                 binary_operations: HashMap::new(),
                 unary_operations: HashMap::new()
-            })
+            })]
         ),
         (
-            vec!["str".to_string()],
-            ResourceKind::Type(TypeDefinition {
+            "str".to_string(),
+            vec![ResourceKind::Type(TypeDefinition {
                 kind: TypeKind::Primitive,
                 binary_operations: HashMap::new(),
                 unary_operations: HashMap::new()
-            })
+            })]
         ),
         num_type!(float;),
         num_type!(float32;),

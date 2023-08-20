@@ -54,25 +54,46 @@ thread_local! {
 }
 
 
-pub(crate) fn get_global_resource<'a, 'b>(path: &'a [String], from: Option<&[String]>) -> Result<&'b ResourceKind, AnalysisError> {
+pub(crate) fn get_global_resource<'a, 'b>(path: &'a [String], from: Option<&[String]>) -> Result<Vec<&'b ResourceKind>, AnalysisError> {
     PACKAGES.with(|p| 
         p.get_res(&path[0])
         .ok_or_else(|| AnalysisError::UnknownResource{path: Vec::from(path), found: None})
         .and_then(|m| {
             if path.len() == 1 {
-                Ok(m)
+                Ok(vec![m])
             } else {
                 match m {
-                    ResourceKind::Module(m) => m.get_local_resource(&path[1..], from),
+                    ResourceKind::Module(m) => Ok(m.get_local_resource(&path[1..], from)?
+                        .into_iter()
+                        .collect()),
                     _ => unreachable!("resources stored in global package are modules")
                 }
             }
             
         })
-        .map(|x| unsafe { &*(x as *const _) }) // lifetimes!
+        .map(|x| x.into_iter().map(|y| unsafe { &*(y as *const _) }).collect()) // lifetimes!
     )
 }
 
+pub(crate) fn extract_function_head<'a>(
+            resources: Vec<&'a ResourceKind>,
+        ) -> Result<Vec<&'a FunctionHead>, AnalysisError> {
+    Ok(resources.into_iter().filter_map(|x| match x {
+        ResourceKind::Function(func) => Some(func),
+        _ => None
+    }).collect())
+}
+
+pub(crate) fn extract_type<'a>(
+            resources: Vec<&'a ResourceKind>,
+            path: &Vec<String>
+        ) -> Result<&'a TypeDefinition, AnalysisError> {
+    Ok(resources.iter().filter_map(|x| match x {
+        ResourceKind::Type(ty) => Some(ty),
+        _ => None
+    }).next()
+    .ok_or(AnalysisError::UnknownResource { path: path.clone(), found: resources.into_iter().next().cloned() })?)
+}
 
 #[derive(Debug, Clone)]
 pub enum AnalysisError {
@@ -148,7 +169,7 @@ pub enum AnalysisError {
         file: PathBuf,
     },
     ResourceShadowing {
-        path: Vec<String>
+        name: String
     },
     WriteOnImmutableReference,
     MutRefOfImmutableValue {
@@ -520,7 +541,7 @@ impl FunctionScope {
         &'a self,
         module: &'a ModuleScope,
         name: &Vec<String>,
-    ) -> Result<&FunctionHead, AnalysisError> {
+    ) -> Result<Vec<&FunctionHead>, AnalysisError> {
         module.get_function_head(name)
     }
 
@@ -529,14 +550,14 @@ impl FunctionScope {
         module: &'a ModuleScope,
         mut instance: Expression,
         method_name: String,
-    ) -> Result<(Expression, &Vec<String>, &FunctionHead), AnalysisError> {
+    ) -> Result<(Expression, &FunctionHead), AnalysisError> {
         let candidates = module.declared_methods.get(&method_name).ok_or(AnalysisError::UnknownMethod { instance_type: instance.type_.clone(), method: method_name.clone() })?;
 
-        if let Some((impl_module, func)) = candidates.get(&instance.type_) {
-            return Ok((instance, impl_module, &func.head))
+        if let Some(func) = candidates.get(&instance.type_) {
+            return Ok((instance, &func.head))
         }
 
-        for (type_, (impl_module, func)) in candidates {
+        for (type_, func) in candidates {
             let mut base = type_.clone();
             let mut derefs = vec![];
             let mut found = false;
@@ -558,7 +579,7 @@ impl FunctionScope {
                     }
                 }
 
-                return Ok((instance, impl_module, &func.head))
+                return Ok((instance, &func.head))
             }
         }
 
@@ -878,7 +899,8 @@ impl FunctionScope {
                 function: function_name,
                 arguments,
             } => {
-                let function = self.get_function_head(module, &function_name)?;
+                // TODO: function overloading
+                let function = self.get_function_head(module, &function_name)?[0];
 
                 let mut typed_args = vec![];
                 if let Some(true) = function.is_variadic {
@@ -938,7 +960,7 @@ impl FunctionScope {
             }
             ast::Expression::MethodCall { instance, method, arguments } => {
                 let instance = self.type_expression(module,*instance, true)?;
-                let (instance, _, function) = self.get_method_head(module, instance, method.clone())?;
+                let (instance, function) = self.get_method_head(module, instance, method.clone())?;
 
                 let mut typed_args = vec![];
 
@@ -1070,8 +1092,9 @@ impl FunctionScope {
 #[derive(Debug, Clone)]
 pub enum ResourceKind {
     Function(FunctionHead),
+    Method(FunctionHead),
     Type(TypeDefinition),
-    #[allow(dead_code)] 
+    #[allow(dead_code)]
     Variable(Variable),
     Module(ModuleScope),
     Alias(Vec<String>)
@@ -1106,8 +1129,8 @@ pub struct ModuleScope {
     source: Vec<ast::Statement>,
     pub(crate) statements: Vec<Statement>,
     pub(crate) declared_functions: HashMap<String, FunctionScope>,
-    pub(crate) declared_methods: HashMap<String, HashMap<Type, (Vec<String>, FunctionScope)>>,
-    pub(crate) resources: HashMap<String, Resource>,
+    pub(crate) declared_methods: HashMap<String, HashMap<Type, FunctionScope>>,
+    pub(crate) resources: HashMap<String, Vec<Resource>>,
     pub(crate) externs: Vec<String>,
 }
 
@@ -1158,13 +1181,7 @@ impl ModuleScope {
                                 }
                                 
                             }
-                            
-                            let path = vec![name.clone()];
-                            
-                            if self.get_resource(&path).is_ok() {
-                                return Err(AnalysisError::ResourceShadowing { path })
-                            }
-        
+                                    
                             let head: FunctionHead = FunctionHead {
                                 return_type,
                                 arguments: typed_arguments,
@@ -1173,8 +1190,7 @@ impl ModuleScope {
         
                             let func = FunctionScope::new(body, head.clone());
         
-                            self.resources
-                                .insert(name.clone(), Resource { kind: ResourceKind::Function(head), visibility });
+                            self.add_resource(name.clone(), Resource { kind: ResourceKind::Function(head), visibility })?;
                             self.declared_functions.insert(name.clone(), func);
         
                             self.statements
@@ -1203,8 +1219,11 @@ impl ModuleScope {
 
                             let func = FunctionScope::new(body, head.clone());
 
+                            self.add_resource(method_name.clone(), Resource { kind: ResourceKind::Method(head), visibility })?;
+
+
                             self.declared_methods.entry(method_name).or_insert_with(HashMap::new)
-                                .insert(recv_type, (self.path.clone(), func));
+                                .insert(recv_type, func);
                         }
                     }
                 }
@@ -1231,19 +1250,13 @@ impl ModuleScope {
 
                                 let return_type = self.analyse_type(return_type)?;
 
-                                let path = vec![name.clone()];
-
-                                if self.get_resource(&path).is_ok() {
-                                    return Err(AnalysisError::ResourceShadowing { path })
-                                }
-
                                 let func = FunctionHead {
                                     return_type,
                                     arguments: typed_arguments,
                                     is_variadic: Some(is_variadic),
                                 };
 
-                                self.resources.insert(name, Resource { kind: ResourceKind::Function(func), visibility });
+                                self.add_resource(name, Resource { kind: ResourceKind::Function(func), visibility })?;
                             }
                             _ => unreachable!(
                                 "extern blocks should only contain body-less function declarations"
@@ -1266,13 +1279,7 @@ impl ModuleScope {
                         typed_members.insert(m_name, self.analyse_type(m_type)?);
                     }
 
-                    let path = vec![name.clone()];
-
-                    if self.get_resource(&path).is_ok() {
-                        return Err(AnalysisError::ResourceShadowing { path })
-                    }
-
-                    self.resources.insert(
+                    self.add_resource(
                         name.clone(),
                         Resource { 
                             kind: ResourceKind::Type(TypeDefinition {
@@ -1286,20 +1293,17 @@ impl ModuleScope {
                             }),
                             visibility
                         }
-                    );
+                    )?;
                     self.statements.push(Statement::StructDeclaration { name })
                 }
                 ast::Statement::Import { kind, visibility } => match kind {
-                    ast::Import::Absolute(path) => {
-                        if self.get_resource(&path[path.len()-1..]).is_ok() {
-                            return Err(AnalysisError::ResourceShadowing { path })
-                        }
-
-                        self.resources.insert(path.last().expect("path is not empty").clone(), Resource {
+                    ast::Import::Absolute(path) => self.add_resource(
+                        path.last().expect("path is not empty").clone(), 
+                        Resource {
                             kind: ResourceKind::Alias(path),
                             visibility 
-                        });
-                    },
+                        }
+                    )?,
                     ast::Import::Relative(name) => self.add_submodule(name, visibility)?,
                 },
                 other @ (ast::Statement::Expression(_)
@@ -1327,7 +1331,7 @@ impl ModuleScope {
         self.statements
             .push(Statement::Import(end.clone()));
 
-        self.resources.insert(end, Resource { kind: ResourceKind::Module(submodule), visibility });
+        self.add_resource(end, Resource { kind: ResourceKind::Module(submodule), visibility })?;
 
         Ok(())
     }
@@ -1345,7 +1349,7 @@ impl ModuleScope {
 
 
         for impls in declared_methods.values_mut() {
-            for (_, func) in impls.values_mut() {
+            for func in impls.values_mut() {
                 func.execution_pass(self)?;
             }
         }
@@ -1353,66 +1357,59 @@ impl ModuleScope {
         self.declared_methods = declared_methods;
 
         for res in self.resources.values_mut() {
-            match &mut res.kind {
-                ResourceKind::Module(m) => {
-                    m.execution_pass()?;
-                },
-                ResourceKind::Alias(path) => {
-                    get_global_resource(&path, Some(&self.path))?;
-                },
-                _ => {}
+            for r in res {
+                match &mut r.kind {
+                    ResourceKind::Module(m) => {
+                        m.execution_pass()?;
+                    },
+                    ResourceKind::Alias(path) => {
+                        get_global_resource(&path, Some(&self.path))?;
+                    },
+                    _ => {}
 
+                }
             }
         }
 
         Ok(())
     }
 
-    fn get_local_resource(&self, path: &[String], from: Option<&[String]>) -> Result<&ResourceKind, AnalysisError> {
+    fn get_local_resource(&self, path: &[String], from: Option<&[String]>) -> Result<Vec<&ResourceKind>, AnalysisError> {
         let mut module = self;
 
         let mut path_iter = path.iter();
         let end = path_iter.next_back().expect("path is not empty");
 
-        let required_visibility = Visibility::Public;
-
         for name in path_iter {
-            match module.resources.get(name) {
-                Some(Resource {kind: ResourceKind::Alias(res_path), visibility: _}) => {
-                    if let ResourceKind::Module(m) = get_global_resource(res_path, from)? {
+            match module.resources.get(name).map(Vec::as_slice) {
+                Some([Resource {kind: ResourceKind::Alias(res_path), visibility: _}]) => {
+                    if let [ResourceKind::Module(m)] = get_global_resource(res_path, from)?.as_slice() {
                         module = m;
                     } else {
                         return Err(AnalysisError::UnknownResource{ path: Vec::from(path), found: None })
                     }
                 },
-                Some(Resource {kind: ResourceKind::Module(m), visibility: _}) => {
+                Some([Resource {kind: ResourceKind::Module(m), visibility: _}]) => {
                     module = m;
                 },
                 _ => return Err(AnalysisError::UnknownResource{ path: Vec::from(path), found: None })
             }
         }
         
-        let resource = match module.resources.get(end) {
-            Some(Resource { kind: ResourceKind::Alias(res_path), visibility: _ }) => get_global_resource(res_path, from)?,
-            Some(Resource { kind, visibility: _ }) => kind,
-            _ => return Err(AnalysisError::UnknownResource{ path: Vec::from(path), found: None })
-        };
-
         // TODO: visibility
-        match (required_visibility, from) {
-            (_, None) => Ok(resource),
-            (Visibility::Public, _) => Ok(resource),
-            (Visibility::Module, Some(_from)) => {
-                Ok(resource)
-            }
+        match module.resources.get(end).map(Vec::as_slice) {
+            Some([Resource { kind: ResourceKind::Alias(res_path), visibility: _ }]) => get_global_resource(res_path, from),
+            Some([Resource { kind, visibility: _ }]) => Ok(vec![kind]),
+            _ => return Err(AnalysisError::UnknownResource{ path: Vec::from(path), found: None })
         }
+        
     }
 
-    pub(crate) fn get_resource(&self, path: &[String]) -> Result<&ResourceKind, AnalysisError> {
+    pub(crate) fn get_resource(&self, path: &[String]) -> Result<Vec<&ResourceKind>, AnalysisError> {
 
         if path.len() == 1 {
-            if let Some(res) = builtins::TYPES.get(path) {
-                return Ok(res);
+            if let Some(res) = builtins::BUILTINS.get(&path[0]) {
+                return Ok(res.iter().collect()); // convert &Vec<ResourceKind> to Vec<&ResourceKind>
             }
         }
 
@@ -1465,33 +1462,40 @@ impl ModuleScope {
     pub(crate) fn get_function_head(
         &self,
         path: &Vec<String>,
-    ) -> Result<&FunctionHead, AnalysisError> {
-        match self.get_resource(path)? {
-            ResourceKind::Function(func) => Ok(func),
-            found => Err(AnalysisError::UnknownResource { path: path.clone(), found: Some(found.clone()) }),
-        }
+    ) -> Result<Vec<&FunctionHead>, AnalysisError> {
+        Ok(self.get_resource(path)?.into_iter().filter_map(|x| match x {
+            ResourceKind::Function(func) => Some(func),
+            _ => None
+        }).collect())
     }
 
     pub fn get_type(&self, path: &Vec<String>) -> Result<&TypeDefinition, AnalysisError> {
-        match self.get_resource(path)? {
-            ResourceKind::Type(ty) => Ok(ty),
-            found => Err(AnalysisError::UnknownResource { path: path.clone(), found: Some(found.clone()) }),
-        }
+        let resources = self.get_resource(path)?;
+
+        Ok(resources.iter().filter_map(|x| match x {
+            ResourceKind::Type(func) => Some(func),
+            _ => None
+        }).next()
+        .ok_or(AnalysisError::UnknownResource { path: path.clone(), found: resources.into_iter().next().cloned() })?)
     }
 
     pub fn get_named_type(&self, type_: &Type) -> Result<&TypeDefinition, AnalysisError> {
         match type_ {
-            Type::Path(path) => {
-                if let ResourceKind::Type(ty) = get_global_resource(path, None)? {
-                    Ok(ty)
-                } else {
-                    Err(AnalysisError::UnknownResource { path: path.clone(), found: None })
-                }
-            },
+            Type::Path(path) => extract_type(get_global_resource(path, None)?, path),
             _ => Err(AnalysisError::NotAStruct {
                 found: type_.clone()
             })
         }
+    }
+
+    fn add_resource(&mut self, at: String, resource: Resource) -> Result<(), AnalysisError>{
+        use std::collections::hash_map::Entry;
+        match self.resources.entry(at) {
+            Entry::Vacant(x) => x.insert(vec![resource]),
+            Entry::Occupied(x) => return Err(AnalysisError::ResourceShadowing { name: x.key().clone() })
+        };
+
+        Ok(())
     }
 
     pub fn main(root: PathBuf) -> Result<String, TranspileError> {
@@ -1613,7 +1617,7 @@ impl ModuleScope {
     }
 
     pub(crate) fn make_path_absolute(&self, mut path: Vec<String>) -> Result<Vec<String>, AnalysisError> {
-        if builtins::TYPES.get(&path).is_some() {
+        if path.len() == 1 && builtins::BUILTINS.get(&path[0]).is_some() {
             return Ok(path);
         }
 
@@ -1631,16 +1635,15 @@ impl ModuleScope {
 
 
         for name in path_iter {
-
-            match module.resources.get(name) {
-                Some(Resource {kind: ResourceKind::Alias(path), ..}) => {
-                    if let ResourceKind::Module(m) = get_global_resource(&path, None)? {
+            match module.resources.get(name).map(Vec::as_slice) {
+                Some([Resource {kind: ResourceKind::Alias(path), ..}]) => {
+                    if let [ResourceKind::Module(m)] = get_global_resource(&path, None)?.as_slice() {
                         absolute.clear();
                         absolute.append(&mut path.clone());
                         module = m
                     }
                 },
-                Some(Resource {kind: ResourceKind::Module(m), ..}) => {
+                Some([Resource {kind: ResourceKind::Module(m), ..}]) => {
                     if !nonlocal {
                         absolute.append(&mut self.path.clone());
                     }
@@ -1653,22 +1656,22 @@ impl ModuleScope {
         }
         
         if nonlocal {
-            match module.resources.get(&end) {
-                Some(Resource { kind: ResourceKind::Alias(res_path), .. }) => {
+            match module.resources.get(&end).map(Vec::as_slice) {
+                Some([Resource { kind: ResourceKind::Alias(res_path), .. }]) => {
                     Ok(res_path.clone())
                 },
-                Some(Resource {..}) => {
+                Some(_) => {
                     absolute.push(end);
                     Ok(absolute)
                 }
                 _ => return Err(AnalysisError::UnknownResource { path: path.clone(), found: None }),
             }
         } else {
-            match module.resources.get(&end) {
-                Some(Resource { kind: ResourceKind::Alias(res_path), .. }) => {
+            match module.resources.get(&end).map(Vec::as_slice) {
+                Some([Resource { kind: ResourceKind::Alias(res_path), .. }]) => {
                     Ok(res_path.clone())
                 },
-                Some(Resource {..}) => {
+                Some(_) => {
                     let mut absolute = self.path.clone();
                     absolute.append(&mut path);
                     Ok(absolute)

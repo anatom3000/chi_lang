@@ -1,7 +1,7 @@
 use std::{collections::{HashMap, HashSet}, fmt::Display};
 
 use crate::{
-    analysis::{ExpressionData, ModuleScope, ResourceKind, Statement, Type, TypeKind, get_global_resource},
+    analysis::{ExpressionData, ModuleScope, ResourceKind, Statement, Type, TypeKind, get_global_resource, Resource, extract_function_head},
     ast::Literal,
 };
 
@@ -40,7 +40,7 @@ impl<'a> ModuleTranspiler<'a> {
         }
 
         for (method, impls) in &new.scope.declared_methods {
-            for (receiver, (impl_module, func)) in impls {
+            for (receiver, func) in impls {
                 let args = func
                     .head
                     .arguments
@@ -54,7 +54,7 @@ impl<'a> ModuleTranspiler<'a> {
 
                 // args is never empty since it has at least a receiver
 
-                let name = new.transpile_method_path(receiver, method, impl_module);
+                let name = new.transpile_method_path(receiver, method, &new.scope.path);
                 let declaration = new
                     .transpile_declaration(&func.head.return_type, &format!("{name}({args})"));
 
@@ -132,8 +132,8 @@ impl<'a> ModuleTranspiler<'a> {
                 }
                 Statement::LetAssignment { .. } => todo!("global variable transpilation"),
                 Statement::Import(child) => {
-                    let submodule = match &new.scope.resources.get(child).expect("imported submodule is valid").kind {
-                        ResourceKind::Module(ref m) => m,
+                    let submodule = match &new.scope.resources.get(child).expect("imported submodule is valid").as_slice() {
+                        [Resource { kind: ResourceKind::Module(m), .. }] => m,
                         _ => unreachable!("imported submodule is a resource of type Module")
                     };
                     let mut transpiled_submodule = ModuleTranspiler::transpile(submodule);
@@ -254,10 +254,8 @@ impl<'a> ModuleTranspiler<'a> {
             }
             ExpressionData::FunctionCall { function, arguments, } => {
 
-                let head = match get_global_resource(&function, None) {
-                    Ok(ResourceKind::Function(func)) => func,
-                    _ => unreachable!("called function exists"),
-                };
+                // TODO: function overloading
+                let head = extract_function_head(get_global_resource(&function, None).expect("called function exists")).expect("called function exists")[0];
                 let name = if head.is_variadic.is_some() {
                     function.last().expect("path is not empty").clone()
                 } else {
@@ -270,14 +268,8 @@ impl<'a> ModuleTranspiler<'a> {
                     .join(", ");
                 format!("{name}({args})")
             }
-            ExpressionData::MethodCall { receiver, method, arguments } => {
-                let (impl_module, _) = self.scope.declared_methods
-                    .get(method)
-                        .expect("called method name exists")
-                    .get(&receiver)
-                        .expect("called method on type exists");
-                
-                let name = self.transpile_method_path(&receiver, &method, impl_module);
+            ExpressionData::MethodCall { receiver, method, arguments } => {                
+                let name = self.transpile_method_path(&receiver, &method, &self.scope.path);
                 let args = arguments
                     .into_iter()
                     .map(|e| self.transpile_expression(&e.data))
