@@ -45,7 +45,6 @@ Executable generation is only supported on Linux (and perhaps MacOS, untested), 
 - [x] Immutable/Mutable References `&x`/`!x`
 - [x] Auto (de)referencing
 - [x] Struct methods
-- [ ] Fix resource visibility
 - [ ] Generics
 - [ ] Enums
 - [ ] Nullable Pointers as `Option<!T>` (similar to Rust's null pointer optimization but with C compatibility)
@@ -68,6 +67,7 @@ Executable generation is only supported on Linux (and perhaps MacOS, untested), 
     - [ ] Array as values
     - [ ] Referencing of rvalue expressions
 - [ ] Traits
+- [ ] Resource visibility
 - [ ] A standard library
 - [ ] Better error messages
 - [ ] `extern` struct declarations
