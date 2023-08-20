@@ -1409,7 +1409,7 @@ impl ModuleScope {
             }
         }
 
-        self.get_local_resource(path, Visibility::Module).map_err(|e|Err(e).unwrap())
+        self.get_local_resource(path, Visibility::Module)
     }
 
     pub(crate) fn get_resource_no_vis(&self, path: &Vec<String>) -> Result<&ResourceKind, AnalysisError> {
