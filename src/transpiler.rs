@@ -54,7 +54,7 @@ impl<'a> ModuleTranspiler<'a> {
 
                 // args is never empty since it has at least a receiver
 
-                let name = new.transpile_method_path(receiver, method, &new.scope.path);
+                let name = new.mangle_method(receiver, method, &new.scope.path);
                 let declaration = new
                     .transpile_declaration(&func.head.return_type, &format!("{name}({args})"));
 
@@ -93,9 +93,13 @@ impl<'a> ModuleTranspiler<'a> {
                     if args.is_empty() {
                         args = "void".to_string();
                     }
-    
-                    // don't "namespacify" the function name if function is the main function or an extern function
-                    let func_name = new.transpile_path(&new.scope.make_path_absolute(vec![name.clone()]).expect("referenced path exists"));
+
+                    
+                    let func_name = if func.head.no_mangle {
+                        name.clone()
+                    } else {
+                        new.mangle_function(&new.scope.make_path_absolute(vec![name.clone()]).expect("referenced path exists")) 
+                    };
                     let declaration = new
                         .transpile_declaration(&func.head.return_type, &format!("{func_name}({args})"));
 
@@ -118,7 +122,7 @@ impl<'a> ModuleTranspiler<'a> {
                     let TypeKind::Struct {members} = struct_type.kind.clone()
                         else { unreachable!("defined struct should have struct type ") };
     
-                    let struct_name = new.transpile_path(&new.scope.make_path_absolute(vec![name.clone()]).expect("referenced path exists"));
+                    let struct_name = new.mangle_struct(&new.scope.make_path_absolute(vec![name.clone()]).expect("referenced path exists"));
 
                     let mut body = vec![];
                     new.indent += 1;
@@ -256,10 +260,10 @@ impl<'a> ModuleTranspiler<'a> {
 
                 // TODO: function overloading
                 let head = extract_function_head(get_global_resource(&function, None).expect("called function exists")).expect("called function exists")[0];
-                let name = if head.is_variadic.is_some() {
+                let name = if head.no_mangle {
                     function.last().expect("path is not empty").clone()
                 } else {
-                    self.transpile_path(function)
+                    self.mangle_function(function)
                 };
                 let args = arguments
                     .into_iter()
@@ -269,7 +273,7 @@ impl<'a> ModuleTranspiler<'a> {
                 format!("{name}({args})")
             }
             ExpressionData::MethodCall { receiver, method, arguments } => {                
-                let name = self.transpile_method_path(&receiver, &method, &self.scope.path);
+                let name = self.mangle_method(&receiver, &method, &self.scope.path);
                 let args = arguments
                     .into_iter()
                     .map(|e| self.transpile_expression(&e.data))
@@ -298,7 +302,7 @@ impl<'a> ModuleTranspiler<'a> {
                 if path.len() == 1 {
                     self.transpile_variable(&path[0])
                 } else {
-                    self.transpile_path(&path)
+                    todo!("transpile namespaced variable {path:?}")
                 }
                 
             },
@@ -359,17 +363,12 @@ impl<'a> ModuleTranspiler<'a> {
         self.transpile_variable(name)
     }
 
-    fn transpile_path(&self, path: &Vec<String>) -> String {
-        // TODO: check for conflicting function names
-        path.join("_")
-    }
-
     fn transpile_named_type(&self, path: &Vec<String>) -> String {
         if path.len() == 1 {
             match path[0].as_str() {
-                "int" => "int".to_string(),
-                "uint" => "unsigned int".to_string(),
-                "float" => "double".to_string(),
+                "int" => "int32_t".to_string(),
+                "uint" => "uint32_t".to_string(),
+                "float" => "_Float64".to_string(),
                 "bool" => "_Bool".to_string(),
                 "char" => "char".to_string(),
 
@@ -378,43 +377,93 @@ impl<'a> ModuleTranspiler<'a> {
                 "int16" => "int16_t".to_string(),
                 "uint16" => "uint16_t".to_string(),
                 "int32" => "int32_t".to_string(),
-                "uint32" => "int32_t".to_string(),
-                "int64" => "uint64_t".to_string(),
+                "uint32" => "uint32_t".to_string(),
+                "int64" => "int64_t".to_string(),
                 "uint64" => "uint64_t".to_string(),
 
-                "float32" => "float".to_string(),
-                "float64" => "double".to_string(),
-                "float128" => "long double".to_string(),
+                "float32" => "_Float32".to_string(),
+                "float64" => "_Float64".to_string(),
+                "float128" => "_Float128".to_string(),
 
                 "usize" => "size_t".to_string(),
                 "isize" => "ptrdiff_t".to_string(),
 
-                _ => self.transpile_path(path),
+                _ => self.mangle_struct(path),
             }
         } else {
-            self.transpile_path(path)
+            self.mangle_struct(path)
+        }
+    }
+}
+
+impl<'a> ModuleTranspiler<'a> {
+    const MANGLE_PREFIX: &'static str = "_C";
+
+    fn mangle_ident(&self, ident: &String) -> String {
+        format!("{}{}", ident.len(), ident)
+    }
+    
+    fn mangle_path(&self, path: &Vec<String>) -> String {
+        format!("N{}E", path.iter().map(|x| self.mangle_ident(x)).collect::<Vec<_>>().join(""))
+    }
+
+    fn mangle_named_type(&self, path: &Vec<String>) -> String {
+        if path.len() == 1 {
+            match path[0].as_str() {
+                "int" => "i".to_string(),
+                "uint" => "u".to_string(),
+                "float" => "f".to_string(),
+                "bool" => "b".to_string(),
+                "char" => "c".to_string(),
+
+                "int8" => "i8".to_string(),
+                "uint8" => "u8".to_string(),
+                "int16" => "i16".to_string(),
+                "uint16" => "u16".to_string(),
+                "int32" => "i32".to_string(),
+                "uint32" => "u32".to_string(),
+                "int64" => "i64".to_string(),
+                "uint64" => "u64".to_string(),
+
+                "float32" => "f32".to_string(),
+                "float64" => "f64".to_string(),
+                "float128" => "f128".to_string(),
+
+                "usize" => "si".to_string(),
+                "isize" => "su".to_string(),
+
+                _ => self.mangle_path(path),
+            }
+        } else {
+            self.mangle_path(path)
         }
     }
 
-    fn transpile_type(&self, ty: &Type) -> String {
+    fn mangle_type(&self, ty: &Type) -> String {
         match ty {
-            Type::Void => "void".to_string(),
-            Type::Path(path) => self.transpile_named_type(path),
+            Type::Void => "V".to_string(),
+            Type::Path(path) => self.mangle_named_type(path),
             Type::Reference { inner, mutable } => {
                 if *mutable {
-                    format!("_mutref__{}", self.transpile_type(inner))
+                    format!("M{}", self.mangle_type(inner))
                 } else {
-                    format!("_ref__{}", self.transpile_type(inner))
+                    format!("R{}", self.mangle_type(inner))
                 }
             }
         }
     }
 
-    fn transpile_method_path(&self, receiver: &Type, method: &String, impl_module: &Vec<String>) -> String {
-        format!("{}__{}_{}", self.transpile_type(receiver), self.transpile_path(&impl_module), method)
+    fn mangle_method(&self, receiver: &Type, method: &String, impl_module: &Vec<String>) -> String {
+        format!("{}M{}{}{}", Self::MANGLE_PREFIX, self.mangle_type(receiver), self.mangle_path(&impl_module), self.mangle_ident(method))
     }
 
+    fn mangle_function(&self, path: &Vec<String>) -> String {
+        format!("{}F{}", Self::MANGLE_PREFIX, self.mangle_path(path))
+    }
 
+    fn mangle_struct(&self, path: &Vec<String>) -> String {
+        format!("{}S{}", Self::MANGLE_PREFIX, self.mangle_path(path))
+    }
 }
 
 impl<'a> Display for ModuleTranspiler<'a> {

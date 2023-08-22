@@ -463,6 +463,7 @@ pub struct FunctionHead {
     pub(crate) return_type: Type,
     pub(crate) arguments: Vec<(String, Type)>,
     pub(crate) is_variadic: Option<bool>,
+    pub(crate) no_mangle: bool
 }
 
 #[derive(Debug, Clone)]
@@ -1166,8 +1167,10 @@ impl ModuleScope {
                             }
         
                             let mut return_type = self.analyse_type(return_type)?;
+
+                            let is_main = self.is_main && name == "main";
         
-                            if name == "main" {
+                            if is_main {
                                 // implicitly return int if function is main
                                 if return_type == type_!(void) {
                                     return_type = type_!(int);
@@ -1186,6 +1189,7 @@ impl ModuleScope {
                                 return_type,
                                 arguments: typed_arguments,
                                 is_variadic: None,
+                                no_mangle: is_main
                             };
         
                             let func = FunctionScope::new(body, head.clone());
@@ -1214,7 +1218,8 @@ impl ModuleScope {
                             let head = FunctionHead {
                                 return_type,
                                 arguments: typed_arguments,
-                                is_variadic: None
+                                is_variadic: None,
+                                no_mangle: false
                             };
 
                             let func = FunctionScope::new(body, head.clone());
@@ -1254,6 +1259,7 @@ impl ModuleScope {
                                     return_type,
                                     arguments: typed_arguments,
                                     is_variadic: Some(is_variadic),
+                                    no_mangle: true
                                 };
 
                                 self.add_resource(name, Resource { kind: ResourceKind::Function(func), visibility })?;
