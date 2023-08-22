@@ -267,6 +267,46 @@ impl Display for UnaryOperator {
     }
 }
 
+#[derive(Debug, Clone)]
+pub(crate) enum CoercionMethod {
+    None,
+    Ref,
+    MutRef,
+    Nested {
+        inner: Box<CoercionMethod>,
+        then: Box<CoercionMethod>
+    }
+}
+
+impl CoercionMethod {
+    fn apply(&self, module: &ModuleScope, value: Expression, allow_implicit_mutable_coercion: bool) -> Result<Expression, AnalysisError> {
+        match self {
+            Self::None => Ok(value),
+            Self::Ref => Ok(Expression {
+                type_: Type::Reference { inner: Box::new(value.type_.clone()), mutable: false },
+                data: ExpressionData::Unary { operator: UnaryOperator::Ref, argument: Box::new(value) },
+                mutable: false,
+            }),
+            Self::MutRef => {
+                if !allow_implicit_mutable_coercion || !value.mutable {
+                    return Err(AnalysisError::ExpectedMutableValue { value })
+                }
+
+                Ok(Expression {
+                    type_: Type::Reference { inner: Box::new(value.type_.clone()), mutable: true },
+                    data: ExpressionData::Unary { operator: UnaryOperator::Ref, argument: Box::new(value) },
+                    mutable: true,
+                })
+            },
+            Self::Nested { inner, then } => {
+                let value = inner.apply(module, value, allow_implicit_mutable_coercion)?;
+                let value = then.apply(module, value, allow_implicit_mutable_coercion)?;
+                Ok(value)
+            }
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Type {
     Void,
@@ -290,13 +330,18 @@ impl Type {
         !matches!(self, Type::Reference { inner: _, mutable: false })
     }
     
-    fn can_coerce_to(&self, module: &ModuleScope, expected: &Type) -> Result<bool, AnalysisError> {
+    fn coerce_method(&self, module: &ModuleScope, expected: &Type) -> Option<CoercionMethod> {
         match (expected, self) {
-            (Self::Path(expected), Self::Path(found)) => Ok(expected == found),
-            (expected, found) if expected == found => Ok(true),
+            (expected, found) if expected == found => (expected == found).then_some(CoercionMethod::None),
             (Type::Reference { inner: expected_inner, mutable: false }, Type::Reference { inner: found_inner, mutable: true }) 
-                => found_inner.can_coerce_to(module, expected_inner),
-            _ => Ok(false),
+                => found_inner.coerce_method(module, expected_inner),
+            (Type::Reference { inner, mutable }, found) => {
+                Some(CoercionMethod::Nested {
+                    inner: Box::new(found.coerce_method(module, inner)?), 
+                    then:  Box::new(if *mutable {CoercionMethod::MutRef} else {CoercionMethod::Ref})
+                })
+            },
+            _ => None,
         }
     }
 }
@@ -410,52 +455,12 @@ impl Expression {
         }
     }
 
-    fn coerce_to(self, module: &ModuleScope, expected: &Type, mutable: bool) -> Result<Expression, AnalysisError> {
-        if mutable && !self.mutable {
-            return Err(AnalysisError::ExpectedMutableValue { value: self })
-        }
+    fn coerce_to_new(self, module: &ModuleScope, expected: &Type, allow_implicit_mutable_coercion: bool) -> Result<Expression, AnalysisError> {
+        let method = self.type_.coerce_method(module, expected)
+            .ok_or_else(|| AnalysisError::UnexpectedType { expected: expected.clone(), found: self.type_.clone() })?;
         
-        if self.type_.can_coerce_to(module, expected)? {
-            return Ok(self)
-        }
-
-        match (self.type_.clone(), expected) {
-            (found, Type::Reference { inner, mutable: false }) => {
-                let new = self.coerce_to(module, inner, mutable)?;
-                Ok(Expression {
-                    data: ExpressionData::Unary { operator: UnaryOperator::Ref, argument: Box::new(new) },
-                    mutable: false,
-                    type_: Type::Reference { inner: Box::new(found), mutable: false }
-                })
-            }
-
-            (found, expected) => Err(AnalysisError::UnexpectedType { expected: expected.clone(), found }),
-        }
+        method.apply(module, self, allow_implicit_mutable_coercion)
     }
-    
-    fn coerce_to_mutable(self, module: &ModuleScope, expected: &Type, mutable: bool) -> Result<Expression, AnalysisError> {
-        if mutable && !self.mutable {
-            return Err(AnalysisError::ExpectedMutableValue { value: self })
-        }
-        
-        if self.type_.can_coerce_to(module, expected)? {
-            return Ok(self)
-        }
-
-        match (self.type_.clone(), expected) {
-            (found, Type::Reference { inner, mutable: ref_is_mut }) => {
-                let new = self.coerce_to_mutable(module, inner, mutable)?;
-                Ok(Expression {
-                    data: ExpressionData::Unary { operator: UnaryOperator::Ref, argument: Box::new(new) },
-                    mutable: false,
-                    type_: Type::Reference { inner: Box::new(found), mutable: *ref_is_mut }
-                })
-            }
-
-            (found, expected) => Err(AnalysisError::UnexpectedType { expected: expected.clone(), found }),
-        }
-    }
-
 }
 
 #[derive(Clone, Debug)]
@@ -641,7 +646,7 @@ impl FunctionScope {
                 let lhs_ty = lhs.type_lhs(self, module)?;
 
                 let rhs = self.type_expression(module, rhs, false)?
-                    .coerce_to(module, &lhs_ty, false)?;
+                    .coerce_to_new(module, &lhs_ty, false)?;
 
                 Ok(Statement::Assignment { lhs, rhs })
             }
@@ -653,7 +658,7 @@ impl FunctionScope {
                 for (condition, body) in conditions_and_bodies {
                     // TODO: invalidate variables that may not exist (let var = ... in if block)
                     let typed_condition = self.type_expression(module, condition, false)?
-                        .coerce_to(module, &type_!(bool), false)?;
+                        .coerce_to_new(module, &type_!(bool), false)?;
 
                     let mut inner = vec![];
                     for stmt in body {
@@ -682,7 +687,7 @@ impl FunctionScope {
             }
             ast::Statement::While { condition, body } => {
                 let condition = self.type_expression(module, condition, false)?
-                    .coerce_to(module, &type_!(bool), false)?;
+                    .coerce_to_new(module, &type_!(bool), false)?;
 
                 let mut inner = vec![];
                 for stmt in body {
@@ -699,7 +704,7 @@ impl FunctionScope {
                     Some(expr) => {
                         Some(
                             self.type_expression(module, expr, false)?
-                                .coerce_to(module, &self.head.return_type, false)?
+                                .coerce_to_new(module, &self.head.return_type, false)?
                         )
                     }
                     None => {
@@ -914,18 +919,15 @@ impl FunctionScope {
                     }
 
                     for (index, found) in arguments.into_iter().enumerate() {
-                        let found = self.type_expression(module, found, true)?;
-
                         match function.arguments.get(index) {
                             Some(expected) => {
-                                // TODO: ownership
                                 let should_be_mutable = expected.1.mutability_hint();
-
-                                let found = found.coerce_to(module, &expected.1, should_be_mutable)?;
-
-                                typed_args.push(found)
+                                typed_args.push(
+                                    self.type_expression(module, found, should_be_mutable)?
+                                    .coerce_to_new(module, &expected.1, false)?
+                                )
                             }
-                            None => typed_args.push(found),
+                            None => typed_args.push(self.type_expression(module, found, true)?), // we cannot coerce the argument because the parameter is variadic
                         }
                     }
                 } else {
@@ -943,7 +945,7 @@ impl FunctionScope {
 
                         typed_args.push(
                             self.type_expression(module, found, should_be_mutable)?
-                                .coerce_to(module, &expected.1, should_be_mutable)?
+                                .coerce_to_new(module, &expected.1, false)?
                         )
                     }
                 }
@@ -977,7 +979,7 @@ impl FunctionScope {
 
                 let (_, receiver_type) = func_args_iter.next().expect("methods always have at least one parameter");
 
-                typed_args.push(instance.coerce_to_mutable(module, receiver_type, receiver_type.mutability_hint())?);
+                typed_args.push(instance.coerce_to_new(module, receiver_type, true)?);
 
                 for (expected, found) in std::iter::zip(func_args_iter, arguments) {
                     // TODO: ownership
@@ -985,7 +987,7 @@ impl FunctionScope {
 
                     typed_args.push(
                         self.type_expression(module, found, should_be_mutable)?
-                            .coerce_to(module, &expected.1, should_be_mutable)?
+                            .coerce_to_new(module, &expected.1, false)?
                     )
                 }
 
@@ -1058,7 +1060,7 @@ impl FunctionScope {
                             typed_members.insert(
                                 m_name, 
                                 self.type_expression(module, value, maybe_mutable)?
-                                    .coerce_to(module, &m_type, maybe_mutable)?
+                                    .coerce_to_new(module, &m_type, false)?
                             );
                         }
 
@@ -1497,8 +1499,40 @@ impl ModuleScope {
     fn add_resource(&mut self, at: String, resource: Resource) -> Result<(), AnalysisError>{
         use std::collections::hash_map::Entry;
         match self.resources.entry(at) {
-            Entry::Vacant(x) => x.insert(vec![resource]),
-            Entry::Occupied(x) => return Err(AnalysisError::ResourceShadowing { name: x.key().clone() })
+            Entry::Vacant(x) => {
+                x.insert(vec![resource]);
+            },
+            Entry::Occupied(mut x) => {
+                match resource.kind {
+                    ResourceKind::Alias(_)
+                    | ResourceKind::Module(_)
+                    | ResourceKind::Variable(_)
+                    => {
+                        if x.get().iter().all(|r| matches!(r.kind, ResourceKind::Method(_))) {
+                            // methods are not real resources, no disambiguation required
+                            x.get_mut().push(resource);
+                        } else {
+                            return Err(AnalysisError::ResourceShadowing { name: x.key().clone() })
+                        }
+                    },
+                    ResourceKind::Function(_) => {
+                        for res in x.get() {
+                            match res.kind {
+                                ResourceKind::Function(_) 
+                                    => todo!("function overloading"),
+                                ResourceKind::Method(_) // methods are not real
+                                | ResourceKind::Type(_) // to support constructors as plain functions
+                                    => (),
+                                ResourceKind::Alias     (_)
+                                | ResourceKind::Module  (_) 
+                                | ResourceKind::Variable(_) 
+                                    => return Err(AnalysisError::ResourceShadowing { name: x.key().clone() })
+                            }
+                        }
+                    },
+                    _ => todo!()
+                }
+            }
         };
 
         Ok(())
