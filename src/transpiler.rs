@@ -78,35 +78,35 @@ impl<'a> ModuleTranspiler<'a> {
 
         }
 
-        for (method, impls) in &new.scope.declared_methods {
-            for (receiver, func) in impls {
-                let args = func
-                    .head
-                    .arguments
-                    .iter()
-                    .map(|(name, type_)| {
-                        new.shadowed_variables.insert(name.clone(), 0);
-                        new.transpile_declaration(type_, name)
-                    })
-                    .collect::<Vec<String>>()
-                    .join(", ");
+        for (method, func) in &new.scope.declared_methods {
+            let receiver = func.head.arguments[0].1.clone();
 
-                // args is never empty since it has at least a receiver
+            let args = func
+                .head
+                .arguments
+                .iter()
+                .map(|(name, type_)| {
+                    new.shadowed_variables.insert(name.clone(), 0);
+                    new.transpile_declaration(type_, name)
+                })
+                .collect::<Vec<String>>()
+                .join(", ");
 
-                let name = new.mangle_method(receiver, method, &new.scope.path);
-                let declaration = new
-                    .transpile_declaration(&func.head.return_type, &format!("{name}({args})"));
+            // args is never empty since it has at least a receiver
 
-                let mut code = vec![];
-                new.indent += 1;
-                for stmt in &func.statements {
-                    code.push(new.transpile_statement(stmt))
-                }
-                new.shadowed_variables.clear();
-                new.indent -= 1;
-                //new.source.pop();
-                new.functions.push((declaration, code.join("\n")))
+            let name = new.mangle_method(&receiver, method, &new.scope.path, &func.head);
+            let declaration = new
+                .transpile_declaration(&func.head.return_type, &format!("{name}({args})"));
+
+            let mut code = vec![];
+            new.indent += 1;
+            for stmt in &func.statements {
+                code.push(new.transpile_statement(stmt))
             }
+            new.shadowed_variables.clear();
+            new.indent -= 1;
+            //new.source.pop();
+            new.functions.push((declaration, code.join("\n")))
         }
 
         for stmt in &new.scope.statements {
@@ -272,8 +272,12 @@ impl<'a> ModuleTranspiler<'a> {
                     .join(", ");
                 format!("{name}({args})")
             }
-            ExpressionData::MethodCall { receiver, method, arguments } => {                
-                let name = self.mangle_method(&receiver, &method, &self.scope.path);
+            ExpressionData::MethodCall { method, arguments, id } => {
+                let receiver = arguments[0].type_.clone();
+
+                let head = self.scope.get_method_head(method.clone()).expect("called method exists")[*id];
+                
+                let name = self.mangle_method(&receiver, &method, &self.scope.path, head);
                 let args = arguments
                     .into_iter()
                     .map(|e| self.transpile_expression(&e.data))
@@ -453,8 +457,20 @@ impl<'a> ModuleTranspiler<'a> {
         }
     }
 
-    fn mangle_method(&self, receiver: &Type, method: &String, impl_module: &Vec<String>) -> String {
-        format!("{}M{}{}{}", Self::MANGLE_PREFIX, self.mangle_type(receiver), self.mangle_path(&impl_module), self.mangle_ident(method))
+    fn mangle_method(&self, receiver: &Type, method: &String, impl_module: &Vec<String>, head: &FunctionHead) -> String {
+        let mut args;
+        if head.arguments.is_empty() {
+            args = "v".to_string();
+        } else {
+            args = String::with_capacity(head.arguments.len());
+            for (_, arg_type) in &head.arguments {
+                args.push_str(&self.mangle_type(arg_type))
+            }
+        }
+
+        let return_type = self.mangle_type(&head.return_type);
+
+        format!("{}M{}{}{}{args}R{return_type}", Self::MANGLE_PREFIX, self.mangle_type(receiver), self.mangle_path(&impl_module), self.mangle_ident(method))
     }
 
     fn mangle_function(&self, path: &Vec<String>, head: &FunctionHead) -> String {

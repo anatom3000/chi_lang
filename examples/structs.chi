@@ -14,6 +14,14 @@ def (self: Point).add(other: Point) -> Point {
     }
 }
 
+// method overloading
+def (self: Point).add(other: float) -> Point {
+    return Point {
+        x: self.x + other,
+        y: self.y + other
+    }
+}
+
 def (self: !Point).add_in_place(other: Point) {
     (*self).x = (*self).x + other.x
     (*self).y = (*self).y + other.y
@@ -30,9 +38,13 @@ def main() {
         y: -1.0
     }
     
-    let another = Point { x: 2.0, y: 40.0 }
+    
+    let result = (origin).add(Point { x: 2.0, y: 40.0 })
 
-    let result = (origin).add(another)
+    // method overloading is supported
+    let origin_offset = (origin).add(5.0)
+    printf("origin_offset is at (%f, %f).\n", origin_offset.x, origin_offset.y)
+
 
     // we misplaced the origin, let's fix it!
     // luckily, structs are mutable
@@ -41,6 +53,7 @@ def main() {
     
     // of course we can access struct attributes
     printf("The origin is at (%f, %f).\n", origin.x, origin.y)
+    
     printf("The result is at (%f, %f).\n", result.x, result.y)
 
     let unit = Line {
