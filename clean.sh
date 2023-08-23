@@ -1,0 +1,1 @@
+rm -r generated generated_tests 2> /dev/null

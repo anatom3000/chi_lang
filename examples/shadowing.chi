@@ -14,13 +14,13 @@ struct Point {
 // }
 
 def do_stuff() {
-    // ...
+    printf("No argument!\n")
 }
 
-// function overloading is not supported (yet)
-// def do_stuff(x: int) -> int {
-//     // ...
-// }
+// function overloading is supported
+def do_stuff(x: int) -> int {
+    printf("I got an integer: %i\n", x)
+}
 
 def myfunc() {
     let a = "hello"
@@ -35,6 +35,9 @@ def main() {
     // variable shadowing is allowed
     let a = 420.42
     printf("a = %f\n", a)
+
+    do_stuff()
+    do_stuff(42)
 
     let a = "*something deep about programming languages*\n"
     printf(a)

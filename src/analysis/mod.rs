@@ -4,7 +4,7 @@ use std::ffi::OsStr;
 use std::fmt::Display;
 use std::hash::Hash;
 use std::path::PathBuf;
-use std::{fs, mem, vec};
+use std::{fs, mem, vec, iter};
 
 use crate::ast::{self, Literal, FunctionKind};
 use crate::parser::ParserError;
@@ -188,6 +188,17 @@ pub enum AnalysisError {
     },
     NotAStruct {
         found: Type,
+    },
+    AmbiguousOverloading {
+        defined: FunctionHead,
+        conflicting: FunctionHead
+    },
+    AmbiguousCall {
+        candidates: Vec<FunctionHead>,
+    },
+    InvalidArguments {
+        expected: Vec<Vec<Type>>,
+        found: Vec<Type>
     }
 }
 
@@ -311,7 +322,7 @@ impl CoercionMethod {
 pub enum Type {
     Void,
     Path(Vec<String>),
-    // Array {m
+    // Array {
     //     base: Box<Type>,
     //     size: String
     // },
@@ -387,6 +398,7 @@ pub enum ExpressionData {
     FunctionCall {
         function: Vec<String>,
         arguments: Vec<Expression>,
+        id: usize,
     },
     MethodCall {
         receiver: Type,
@@ -504,9 +516,6 @@ pub(crate) enum Statement {
     Assignment {
         lhs: Expression,
         rhs: Expression,
-    },
-    FunctionDeclaration {
-        name: String,
     },
     StructDeclaration {
         name: String,
@@ -906,48 +915,77 @@ impl FunctionScope {
                 arguments,
             } => {
                 // TODO: function overloading
-                let function = self.get_function_head(module, &function_name)?[0];
+                let overloaded_functions = self.get_function_head(module, &function_name)?;
 
                 let mut typed_args = vec![];
-                if let Some(true) = function.is_variadic {
-                    if function.arguments.len() > arguments.len() {
-                        return Err(AnalysisError::WrongArgumentCount {
-                            function: function_name,
-                            expected: function.arguments.len(),
-                            found: arguments.len(),
-                        });
-                    }
+                for arg in arguments {
+                    typed_args.push(self.type_expression(module, arg, true)?)
+                }
 
-                    for (index, found) in arguments.into_iter().enumerate() {
-                        match function.arguments.get(index) {
-                            Some(expected) => {
-                                let should_be_mutable = expected.1.mutability_hint();
-                                typed_args.push(
-                                    self.type_expression(module, found, should_be_mutable)?
-                                    .coerce_to_new(module, &expected.1, false)?
-                                )
-                            }
-                            None => typed_args.push(self.type_expression(module, found, true)?), // we cannot coerce the argument because the parameter is variadic
+                let arg_n = typed_args.len();
+
+                let mut candidates = vec![];
+                for (id, function) in overloaded_functions.iter().enumerate() {
+                    let mut coercions = vec![];
+                    if let Some(true) = function.is_variadic {
+                        if function.arguments.len() > arg_n {
+                            continue;
                         }
-                    }
-                } else {
-                    if function.arguments.len() != arguments.len() {
-                        return Err(AnalysisError::WrongArgumentCount {
-                            function: function_name,
-                            expected: function.arguments.len(),
-                            found: arguments.len(),
-                        });
-                    }
 
-                    for (expected, found) in std::iter::zip(function.arguments.iter(), arguments) {
-                        // TODO: ownership
-                        let should_be_mutable = expected.1.mutability_hint();
+                        for (index, found) in typed_args.iter().enumerate() {
+                            match function.arguments.get(index) {
+                                Some(expected) => {
+                                    let should_be_mutable = expected.1.mutability_hint();
 
-                        typed_args.push(
-                            self.type_expression(module, found, should_be_mutable)?
-                                .coerce_to_new(module, &expected.1, false)?
-                        )
+                                    let coercion = match found.type_.coerce_method(module, &expected.1) {
+                                        Some(way) => way,
+                                        None => continue,
+                                    };
+
+                                    coercions.push((coercion, Some(should_be_mutable)))
+                                }
+                                None => {
+                                    // we cannot coerce the argument because the parameter is variadic
+                                    coercions.push((CoercionMethod::None, None))
+                                }
+                            }
+                        }
+                    } else {
+                        if function.arguments.len() != arg_n {
+                            continue;
+                        }
+
+                        for (expected, found) in std::iter::zip(&function.arguments, &typed_args) {
+                            // TODO: ownership
+                            let should_be_mutable = expected.1.mutability_hint();
+
+                            let coercion = match found.type_.coerce_method(module, &expected.1) {
+                                Some(way) => way,
+                                None => continue,
+                            };
+                    
+                            coercions.push((coercion, Some(should_be_mutable)))
+                        }
+                    
                     }
+                
+                    candidates.push((id, function, coercions))
+                }
+
+                let (id, function, coercions) = match candidates.len() {
+                    0 => return Err(AnalysisError::InvalidArguments { 
+                        expected: overloaded_functions.into_iter().cloned()
+                            .map(|x| x.arguments.into_iter().map(|a| a.1).collect())
+                            .collect(), 
+                        found: typed_args.into_iter().map(|x| x.type_).collect()
+                    }),
+                    1 => candidates.pop().expect("candidates' length is 1"),
+                    _ => todo!("solve non-trivial function overloading")
+                };
+
+                let mut coerced_args = vec![];
+                for (arg, (coercion, _)) in iter::zip(typed_args, coercions) {
+                    coerced_args.push(coercion.apply(module, arg, false)?);
                 }
 
                 let path = module.make_path_absolute(function_name)?;
@@ -955,7 +993,8 @@ impl FunctionScope {
                 Ok(Expression {
                     data: ExpressionData::FunctionCall {
                         function: path,
-                        arguments: typed_args,
+                        arguments: coerced_args,
+                        id, 
                     },
                     type_: function.return_type.clone(),
                     mutable: maybe_mutable && function.return_type.mutability_hint()
@@ -1131,7 +1170,7 @@ pub struct ModuleScope {
 
     source: Vec<ast::Statement>,
     pub(crate) statements: Vec<Statement>,
-    pub(crate) declared_functions: HashMap<String, FunctionScope>,
+    pub(crate) declared_functions: Vec<(String, FunctionScope)>,
     pub(crate) declared_methods: HashMap<String, HashMap<Type, FunctionScope>>,
     pub(crate) resources: HashMap<String, Vec<Resource>>,
     pub(crate) externs: Vec<String>,
@@ -1197,10 +1236,7 @@ impl ModuleScope {
                             let func = FunctionScope::new(body, head.clone());
         
                             self.add_resource(name.clone(), Resource { kind: ResourceKind::Function(head), visibility })?;
-                            self.declared_functions.insert(name.clone(), func);
-        
-                            self.statements
-                                .push(Statement::FunctionDeclaration { name })
+                            self.declared_functions.push((name.clone(), func));
                         }
                         FunctionKind::Method { receiver: (recv_name, recv_type), name: method_name } => {
                             let recv_type = self.analyse_type(recv_type)?;
@@ -1347,7 +1383,7 @@ impl ModuleScope {
     pub(crate) fn execution_pass(&mut self) -> Result<(), AnalysisError> {
         let mut declared_functions = mem::take(&mut self.declared_functions);
 
-        for func in declared_functions.values_mut() {
+        for (_, func) in &mut declared_functions {
             func.execution_pass(self)?;
         }
 
@@ -1407,7 +1443,7 @@ impl ModuleScope {
         // TODO: visibility
         match module.resources.get(end).map(Vec::as_slice) {
             Some([Resource { kind: ResourceKind::Alias(res_path), visibility: _ }]) => get_global_resource(res_path, from),
-            Some([Resource { kind, visibility: _ }]) => Ok(vec![kind]),
+            Some(found) => Ok(found.iter().map(|x| &x.kind).collect()),
             _ => return Err(AnalysisError::UnknownResource{ path: Vec::from(path), found: None })
         }
         
@@ -1461,12 +1497,6 @@ impl ModuleScope {
         }
     }
 
-    pub(crate) fn get_function(&self, name: &String) -> Result<&FunctionScope, AnalysisError> {
-        self.declared_functions
-            .get(name)
-            .ok_or(AnalysisError::UnknownResource { path: vec![name.clone()], found: None })
-    }
-
     pub(crate) fn get_function_head(
         &self,
         path: &Vec<String>,
@@ -1496,14 +1526,18 @@ impl ModuleScope {
         }
     }
 
-    fn add_resource(&mut self, at: String, resource: Resource) -> Result<(), AnalysisError>{
+    fn add_resource(&mut self, at: String, resource: Resource) -> Result<(), AnalysisError>{        
         use std::collections::hash_map::Entry;
+
+        // borrowing rules! (or does it?)
+        let unsafe_self = unsafe {&mut *(self as *mut _)};
+
         match self.resources.entry(at) {
             Entry::Vacant(x) => {
                 x.insert(vec![resource]);
             },
             Entry::Occupied(mut x) => {
-                match resource.kind {
+                match &resource.kind {
                     ResourceKind::Alias(_)
                     | ResourceKind::Module(_)
                     | ResourceKind::Variable(_)
@@ -1515,11 +1549,28 @@ impl ModuleScope {
                             return Err(AnalysisError::ResourceShadowing { name: x.key().clone() })
                         }
                     },
-                    ResourceKind::Function(_) => {
+                    ResourceKind::Function(head) => {
                         for res in x.get() {
-                            match res.kind {
-                                ResourceKind::Function(_) 
-                                    => todo!("function overloading"),
+                            match &res.kind {
+                                ResourceKind::Function(existing_head) => {
+                                    if existing_head.arguments.len() == head.arguments.len() {
+                                        
+
+                                        let is_similar = 
+                                            iter::zip(&existing_head.arguments, &head.arguments)
+                                            .all(|((_, existing), (_, new))| 
+                                                   existing.coerce_method(unsafe_self, new).is_some() 
+                                                || new.coerce_method(unsafe_self, existing).is_some()
+                                            );
+
+                                        if is_similar {
+                                            return Err(AnalysisError::AmbiguousOverloading {
+                                                defined: head.clone(),
+                                                conflicting: existing_head.clone()
+                                            });
+                                        }
+                                    }
+                                },
                                 ResourceKind::Method(_) // methods are not real
                                 | ResourceKind::Type(_) // to support constructors as plain functions
                                     => (),
@@ -1529,6 +1580,7 @@ impl ModuleScope {
                                     => return Err(AnalysisError::ResourceShadowing { name: x.key().clone() })
                             }
                         }
+                        x.get_mut().push(resource);
                     },
                     _ => todo!()
                 }
@@ -1566,7 +1618,7 @@ impl ModuleScope {
             source,
             statements: vec![],
             resources: HashMap::new(),
-            declared_functions: HashMap::new(),
+            declared_functions: vec![],
             declared_methods: HashMap::new(),
             externs: vec![],
         };
@@ -1636,7 +1688,7 @@ impl ModuleScope {
             source,
             statements: vec![],
             resources: HashMap::new(),
-            declared_functions: HashMap::new(),
+            declared_functions: vec![],
             declared_methods: HashMap::new(),
             externs: vec![],
         })
