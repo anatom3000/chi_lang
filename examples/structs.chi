@@ -39,10 +39,10 @@ def main() {
     }
     
     
-    let result = (origin).add(Point { x: 2.0, y: 40.0 })
+    let result = origin.add(Point { x: 2.0, y: 40.0 })
 
     // method overloading is supported
-    let origin_offset = (origin).add(5.0)
+    let origin_offset = origin.add(5.0)
     printf("origin_offset is at (%f, %f).\n", origin_offset.x, origin_offset.y)
 
 
@@ -55,6 +55,11 @@ def main() {
     printf("The origin is at (%f, %f).\n", origin.x, origin.y)
     
     printf("The result is at (%f, %f).\n", result.x, result.y)
+
+    origin.add_in_place(Point { x: 2.0, y: 4.0 })
+
+    printf("The origin has been moved and is now at (%f, %f).\n", origin.x, origin.y)
+
 
     let unit = Line {
         start: Point { x: 0.0, y: 0.0 },

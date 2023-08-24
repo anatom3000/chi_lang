@@ -86,13 +86,13 @@ pub(crate) fn extract_function_head<'a>(
 
 pub(crate) fn extract_type<'a>(
             resources: Vec<&'a ResourceKind>,
-            path: &Vec<String>
+            path: &[String]
         ) -> Result<&'a TypeDefinition, AnalysisError> {
     Ok(resources.iter().filter_map(|x| match x {
         ResourceKind::Type(ty) => Some(ty),
         _ => None
     }).next()
-    .ok_or(AnalysisError::UnknownResource { path: path.clone(), found: resources.into_iter().next().cloned() })?)
+    .ok_or(AnalysisError::UnknownResource { path: path.into(), found: resources.into_iter().next().cloned() })?)
 }
 
 #[derive(Debug, Clone)]
@@ -430,7 +430,7 @@ impl Expression {
             ExpressionData::Variable(name) => match scope.get_variable(module, name)? {
                 VariableOrAttribute::Attribute(expr) => Ok(expr.type_),
                 VariableOrAttribute::Variable(Variable { type_, mutable }) => match mutable {
-                    true => Ok(type_),
+                    true => Ok(type_.clone()),
                     false => Err(AnalysisError::WriteOnImmutableReference)
                 },
             },
@@ -538,10 +538,20 @@ pub struct Variable {
     mutable: bool,
 }
 
-pub(crate) enum VariableOrAttribute {
-    Variable(Variable),
+pub(crate) enum VariableOrAttribute<'a> {
+    Variable(&'a Variable),
     Attribute(Expression),
 }
+
+pub(crate) enum FunctionsOrMethod<'a> {
+    Functions(Vec<&'a FunctionHead>),
+    Method {
+        instance: Expression,
+        method_name: String
+    },
+}
+
+
 
 #[derive(Clone, Debug)]
 pub struct FunctionScope {
@@ -552,14 +562,6 @@ pub struct FunctionScope {
 }
 
 impl FunctionScope {
-    fn get_function_head<'a>(
-        &'a self,
-        module: &'a ModuleScope,
-        name: &Vec<String>,
-    ) -> Result<Vec<&FunctionHead>, AnalysisError> {
-        module.get_function_head(name)
-    }
-    
     fn get_method_head<'a>(
         &'a self,
         module: &'a ModuleScope,
@@ -568,7 +570,7 @@ impl FunctionScope {
         module.get_method_head(name)
     }
 
-    fn selected_overload<'a>(&'a self, module: &ModuleScope, overloaded_functions: &'a [&FunctionHead], typed_args: Vec<Expression>, is_method: bool) -> Result<(usize, &FunctionHead, Vec<Expression>), AnalysisError> {
+    fn select_overload<'a>(&'a self, module: &ModuleScope, overloaded_functions: &'a [&FunctionHead], typed_args: Vec<Expression>, is_method: bool) -> Result<(usize, &FunctionHead, Vec<Expression>), AnalysisError> {
         let arg_n = typed_args.len();
 
         let mut candidates = vec![];
@@ -641,14 +643,39 @@ impl FunctionScope {
 
     }
 
+    fn get_function_head<'a>(
+        &'a self,
+        module: &'a ModuleScope,
+        path: &[String],
+    ) -> Result<FunctionsOrMethod, AnalysisError> {
+        if path.len() == 1 {
+            return Ok(FunctionsOrMethod::Functions(module.get_function_head(path)?))
+        }
+
+        let instance = match self.get_variable(module, &path[..path.len()-1]) {
+            Ok(VariableOrAttribute::Variable(Variable { type_, mutable })) => Expression {
+                data: ExpressionData::Variable(path[..path.len()-1].into()),
+                type_: type_.clone(),
+                mutable: *mutable
+            },
+            Ok(VariableOrAttribute::Attribute(expr)) => expr,
+            Err(_) => return module.get_function_head(path).map(|x| FunctionsOrMethod::Functions(x))
+        };
+
+        Ok(FunctionsOrMethod::Method {
+            instance,
+            method_name: path.last().expect("path is not empty").clone()
+        })
+    }
+
     fn get_variable<'a>(
         &'a self,
         module: &'a ModuleScope,
-        path: &Vec<String>,
+        path: &[String],
     ) -> Result<VariableOrAttribute, AnalysisError> {
         match self.variables.get(&path[0]) {
-            Some(var) if path.len() == 1 => return Ok(VariableOrAttribute::Variable(var.clone())),
-            Some(Variable { type_, mutable }) => Ok(VariableOrAttribute::Attribute(module.get_struct_member(
+            Some(var) if path.len() == 1 => return Ok(VariableOrAttribute::Variable(var)),
+            Some(Variable { type_, mutable }) => Ok(VariableOrAttribute::Attribute(module.get_type_member(
                 Expression {
                     data: ExpressionData::Variable(vec![path[0].clone()]),
                     type_: type_.clone(),
@@ -656,7 +683,7 @@ impl FunctionScope {
                 },
                 &path[1..],
             )?)),
-            None => Err(AnalysisError::UnknownResource { path: path.clone(), found: None }),
+            None => Ok(VariableOrAttribute::Variable(module.get_variable(path)?)),
         }
     }
 
@@ -954,54 +981,39 @@ impl FunctionScope {
                 function: function_name,
                 arguments,
             } => {
-                let overloaded_functions = self.get_function_head(module, &function_name)?;
+                match self.get_function_head(module, &function_name)? {
+                    FunctionsOrMethod::Functions(overloaded_functions) => {
+                        let mut typed_args = vec![];
+                        for arg in arguments {
+                            typed_args.push(self.type_expression(module, arg, true)?);
+                        }
 
-                let mut typed_args = vec![];
-                for arg in arguments {
-                    typed_args.push(self.type_expression(module, arg, true)?)
-                }
+                        let (id, function, coerced_args) = self.select_overload(module, &overloaded_functions, typed_args, false)?;
 
-                let (id, function, coerced_args) = self.selected_overload(module, &overloaded_functions, typed_args, false)?;
-
-                let path = module.make_path_absolute(function_name)?;
-
-                Ok(Expression {
-                    data: ExpressionData::FunctionCall {
-                        function: path,
-                        arguments: coerced_args,
-                        id, 
+                        let path = module.make_path_absolute(function_name)?;
+        
+                        Ok(Expression {
+                            data: ExpressionData::FunctionCall {
+                                function: path,
+                                arguments: coerced_args,
+                                id, 
+                            },
+                            type_: function.return_type.clone(),
+                            mutable: maybe_mutable && function.return_type.mutability_hint()
+                        })
                     },
-                    type_: function.return_type.clone(),
-                    mutable: maybe_mutable && function.return_type.mutability_hint()
-                })
+                    FunctionsOrMethod::Method { instance, method_name } => self.type_method_call(module, instance, method_name, arguments, maybe_mutable)
+                }
             }
             ast::Expression::MethodCall { instance, method, arguments } => {
                 let instance = self.type_expression(module,*instance, true)?;
 
-                let mut typed_args = vec![instance];
-                for arg in arguments {
-                    typed_args.push(self.type_expression(module, arg, true)?)
-                }
-
-                let overloaded_methods = self.get_method_head(module, method.clone())?;
-
-                let (id, head, coerced_args) = self.selected_overload(module, &overloaded_methods, typed_args, true)?;
-            
-
-                Ok(Expression {
-                    data: ExpressionData::MethodCall {
-                        method,
-                        arguments: coerced_args,
-                        id
-                    },
-                    type_: head.return_type.clone(),
-                    mutable: maybe_mutable && head.return_type.mutability_hint()
-                })
+                self.type_method_call(module, instance, method, arguments, maybe_mutable)
             },
             ast::Expression::Variable(name) => Ok(match self.get_variable(module, &name)? {
                 VariableOrAttribute::Variable(var) => Expression {
                     data: ExpressionData::Variable(name),
-                    type_: var.type_,
+                    type_: var.type_.clone(),
                     mutable: maybe_mutable && var.mutable
                 },
                 VariableOrAttribute::Attribute(expr) => expr,
@@ -1086,7 +1098,30 @@ impl FunctionScope {
         }
     }
 
+    fn type_method_call(&self, module: &ModuleScope, instance: Expression, method: String, arguments: Vec<ast::Expression>, maybe_mutable: bool) -> Result<Expression, AnalysisError> {
+
+        let overloaded_methods = self.get_method_head(module, method.clone())?;
+
+
+        let mut typed_args = vec![instance];
+        for arg in arguments {
+            typed_args.push(self.type_expression(module, arg, true)?)
+        }
+
+        let (id, head, coerced_args) = self.select_overload(module, &overloaded_methods, typed_args, true)?;
     
+
+        Ok(Expression {
+            data: ExpressionData::MethodCall {
+                method,
+                arguments: coerced_args,
+                id
+            },
+            type_: head.return_type.clone(),
+            mutable: maybe_mutable && head.return_type.mutability_hint()
+        })
+
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1413,7 +1448,7 @@ impl ModuleScope {
         self.get_local_resource(path, Some(&self.path))
     }
 
-    pub(crate) fn get_struct_member(
+    pub(crate) fn get_type_member(
         &self,
         instance: Expression,
         path: &[String],
@@ -1435,7 +1470,7 @@ impl ModuleScope {
                     if path.len() == 1 {
                         Ok(instance)
                     } else {
-                        self.get_struct_member(instance, &path[1..])
+                        self.get_type_member(instance, &path[1..])
                     }
                 }
                 None => Err(AnalysisError::UnknownMember {
@@ -1452,7 +1487,7 @@ impl ModuleScope {
 
     pub(crate) fn get_function_head(
         &self,
-        path: &Vec<String>,
+        path: &[String],
     ) -> Result<Vec<&FunctionHead>, AnalysisError> {
         Ok(self.get_resource(path)?.into_iter().filter_map(|x| match x {
             ResourceKind::Function(func) => Some(func),
@@ -1470,14 +1505,24 @@ impl ModuleScope {
         }).collect())
     }
 
-    pub fn get_type(&self, path: &Vec<String>) -> Result<&TypeDefinition, AnalysisError> {
+    pub fn get_type(&self, path: &[String]) -> Result<&TypeDefinition, AnalysisError> {
         let resources = self.get_resource(path)?;
 
         Ok(resources.iter().filter_map(|x| match x {
             ResourceKind::Type(func) => Some(func),
             _ => None
         }).next()
-        .ok_or(AnalysisError::UnknownResource { path: path.clone(), found: resources.into_iter().next().cloned() })?)
+        .ok_or(AnalysisError::UnknownResource { path: path.into(), found: resources.into_iter().next().cloned() })?)
+    }
+    
+    pub fn get_variable(&self, path: &[String]) -> Result<&Variable, AnalysisError> {
+        let resources = self.get_resource(path)?;
+
+        Ok(resources.iter().filter_map(|x| match x {
+            ResourceKind::Variable(var) => Some(var),
+            _ => None
+        }).next()
+        .ok_or(AnalysisError::UnknownResource { path: path.into(), found: resources.into_iter().next().cloned() })?)
     }
 
     pub fn get_named_type(&self, type_: &Type) -> Result<&TypeDefinition, AnalysisError> {
@@ -1543,7 +1588,7 @@ impl ModuleScope {
                                     => return Err(AnalysisError::ResourceShadowing { name: x.key().clone() })
                             }
                         }
-                        ;
+                        x.get_mut().push(resource);
                     },
                     ResourceKind::Method(_) => x.get_mut().push(resource),
                     _ => todo!()
