@@ -29,8 +29,11 @@ pub fn compile(transpiled_file: PathBuf, log_file: PathBuf, binary_file: PathBuf
         ));
     }
 
-    fs::write(log_file, output.stdout)
+    fs::write(&log_file, output.stdout)
         .map_err(|e| CompilationError::IoError(e))?;
+
+    fs::write(log_file, output.stderr)
+    .map_err(|e| CompilationError::IoError(e))?;
 
     Ok(())
 }

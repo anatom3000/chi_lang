@@ -22,7 +22,8 @@ def main() {
         y: -1.0
     }
 
-    let tmp = point.add(origin, p)
+    // method defined on &Point
+    let tmp = origin.add(p)
 
     // let diff = (origin).add(p)
 

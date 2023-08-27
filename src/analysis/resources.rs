@@ -7,7 +7,6 @@ pub(crate) trait Scope: Sized {
     // Required method
     fn get_local_resource(&self, child: &String) -> Option<Vec<&ResourceKind>>;
 
-    // Resource getters
     fn get_resource(&self, path: &[String]) -> Result<Vec<&ResourceKind>, AnalysisError> {
         if path.len() == 1 {
             if let Some(res) = super::builtins::BUILTINS.get(&path[0]) {
@@ -18,8 +17,7 @@ pub(crate) trait Scope: Sized {
         let mut path_iter = path.into_iter();
 
         let mut resources = self.get_local_resource(path_iter.next().expect("resource path is not empty"))
-            .ok_or(AnalysisError::UnknownResource { path: path.into(), found: vec![] })
-            .map_err(|e| Err(e).unwrap())?;
+            .ok_or(AnalysisError::UnknownResource { path: path.into(), found: vec![] })?;
 
         for p in path_iter {
             if let Some(alias) = self.extract_alias(&resources) {
@@ -28,8 +26,7 @@ pub(crate) trait Scope: Sized {
             
             if let Some(submodule) = self.extract_module(&resources) {
                 resources = submodule.get_local_resource(p)
-                    .ok_or(AnalysisError::UnknownResource { path: path.into(), found: vec![] })
-                    .map_err(|e| Err(e).unwrap())?;
+                    .ok_or(AnalysisError::UnknownResource { path: path.into(), found: vec![] })?;
             } else if let Some(type_) = self.extract_type(&resources) {
                 resources = type_.get_local_resource(p).ok_or(AnalysisError::UnknownResource { path: path.into(), found: vec![] })?;
             } else { // Functions, methods & variables do not have children
@@ -167,16 +164,15 @@ pub(crate) trait Scope: Sized {
         }
     }
 
-    fn extract_method_head<'a>(&self, resources: &Vec<&'a ResourceKind>) -> Vec<&'a FunctionHead> {
-        resources.into_iter().filter_map(|x| match x {
-            ResourceKind::Method(func) => Some(func),
+    fn extract_method_head<'a>(&self, resources: &Vec<&'a ResourceKind>) -> Vec<&'a MethodHead> {
+        resources.into_iter().filter_map(|x: &&ResourceKind| match x {
+            ResourceKind::Method(meth) => Some(meth),
             _ => None
         }).collect()
     }
-    fn get_method_head(&self, name: String) -> Result<Vec<&FunctionHead>, AnalysisError> {
+    fn get_method_head(&self, name: String) -> Result<Vec<&MethodHead>, AnalysisError> {
         Ok(self.extract_method_head(&self.get_local_resource(&name)
-            .ok_or(AnalysisError::UnknownResource { path: vec![name], found: vec![] })
-            .map_err(|e| Err(e).unwrap())?
+            .ok_or(AnalysisError::UnknownResource { path: vec![name], found: vec![] })?
         ))
     }
 
@@ -193,6 +189,12 @@ pub(crate) trait Scope: Sized {
             _ => None
         }).next()
     }
+    fn get_module(&self, path: &[String]) -> Result<&ModuleScope, AnalysisError> {
+        let resources = self.get_resource(path)?;
+        
+        self.extract_module(&resources).ok_or(AnalysisError::UnknownResource { path: path.into(), found: resources.into_iter().cloned().collect() })
+    }
+
 }
 
 pub(crate) trait LocatedScope: Scope {
@@ -213,8 +215,7 @@ pub(crate) trait LocatedScope: Scope {
 
         let start = path_iter.next().expect("resource path is not empty");
         let mut resources = self.get_local_resource(start)
-            .ok_or_else(|| AnalysisError::UnknownResource { path: path.clone(), found: vec![] })
-            .map_err(|e| Err(e).unwrap())?;
+            .ok_or_else(|| AnalysisError::UnknownResource { path: path.clone(), found: vec![] })?;
 
         absolute_path.push(start.clone());
 
@@ -241,12 +242,10 @@ pub(crate) trait LocatedScope: Scope {
 
             if let Some(submodule) = self.extract_module(&resources) {
                 resources = submodule.get_local_resource(&p)
-                    .ok_or_else(|| AnalysisError::UnknownResource { path: path.clone(), found: vec![] })
-                    .map_err(|e| Err(e).unwrap())?;
+                    .ok_or_else(|| AnalysisError::UnknownResource { path: path.clone(), found: vec![] })?;
             } else if let Some(type_) = self.extract_type(&resources) {
                 resources = type_.get_local_resource(&p)
-                    .ok_or_else(|| AnalysisError::UnknownResource { path: path.clone(), found: vec![] })
-                    .map_err(|e| Err(e).unwrap())?;
+                    .ok_or_else(|| AnalysisError::UnknownResource { path: path.clone(), found: vec![] })?;
             } else { // Functions and methods do not have children
                 return Err(AnalysisError::UnknownResource { path: path, found: resources.into_iter().cloned().collect() })
             }
@@ -425,21 +424,22 @@ pub(crate) trait LocatedScope: Scope {
                             typed_args.push(self.type_expression(arg, true)?);
                         }
 
-                        let (id, function, coerced_args) = self.select_overload(&overloaded_functions, typed_args, false)?;
+                        let (_, function, coerced_args) = self.select_overload(&overloaded_functions, typed_args, false)?;
 
                         let path = self.make_path_absolute(function_name)?;
         
                         Ok(Expression {
                             data: ExpressionData::FunctionCall {
+                                head: function.clone(),
                                 function: path,
                                 arguments: coerced_args,
-                                id, 
                             },
                             type_: function.return_type.clone(),
                             mutable: maybe_mutable
                         })
                     },
-                    FunctionsOrMethod::Method { instance, method_name } => self.type_method_call(instance, method_name, arguments, maybe_mutable)
+                    FunctionsOrMethod::Method { instance, method_name } 
+                        => self.type_method_call(instance, method_name, arguments, maybe_mutable)
                 }
             }
             ast::Expression::MethodCall { instance, method, arguments } => {
@@ -624,24 +624,48 @@ pub(crate) trait LocatedScope: Scope {
 
     fn type_method_call(&self, instance: Expression, method: String, arguments: Vec<ast::Expression>, maybe_mutable: bool) -> Result<Expression, AnalysisError> {
 
-        let overloaded_methods = self.get_method_head(method.clone())?;
-
+        let overloaded_methods = self.get_method_head(method.clone()).unwrap_or_default();
+        let overloaded_heads = overloaded_methods.iter().map(|x| &x.head).collect::<Vec<_>>();
 
         let mut typed_args = vec![instance];
         for arg in arguments {
             typed_args.push(self.type_expression(arg, true)?)
         }
 
-        let (id, head, coerced_args) = self.select_overload(&overloaded_methods, typed_args, true)?;
+        let definition_module = GLOBAL_SCOPE.get_module(
+            typed_args[0].type_.definition_module()
+        ).expect("definition module of receiver type exists");
+
+
+        let intrinsic_overloaded_methods = definition_module.get_method_head(method.clone()).unwrap_or_default();
+        let intrinsic_overloaded_heads = intrinsic_overloaded_methods.iter().map(|x| &x.head).collect::<Vec<_>>();
+
+        let (head, coerced_args) = match self.select_overload(&overloaded_heads, typed_args.clone(), true) {
+            Ok(x) => {
+                let (id, _, coerced_args) = x;
+                let head = overloaded_methods[id].clone();
+
+                (head, coerced_args)
+            },
+            Err(_) => {
+                let x = self.select_overload(&intrinsic_overloaded_heads, typed_args, true)?;
+
+                let (id, _, coerced_args) = x;
+                let head = intrinsic_overloaded_methods[id].clone();
+
+                (head, coerced_args)
+            }
+        };
     
 
         Ok(Expression {
+            type_: head.head.return_type.clone(),
+
             data: ExpressionData::MethodCall {
+                head,
                 method,
                 arguments: coerced_args,
-                id
             },
-            type_: head.return_type.clone(),
             mutable: maybe_mutable
         })
 
@@ -760,7 +784,7 @@ impl Scope for FunctionScope {
                 }
 
                 if main_resource_exists {
-                    local_resources.extend(parent_resources.into_iter().filter(|x| matches!(x, ResourceKind::Method(_))))
+                    local_resources.extend(parent_resources.into_iter().filter(|x| matches!(x, ResourceKind::Method{..})))
                 } else {
                     local_resources.extend_from_slice(&parent_resources)
                 }
@@ -780,7 +804,7 @@ impl LocatedScope for FunctionScope {
 
 impl Scope for TypeDefinition {
     fn get_local_resource(&self, child: &String) -> Option<Vec<&ResourceKind>> {
-        todo!()
+        todo!("static methods (called with {child})")
     }
 }
 
@@ -860,9 +884,15 @@ pub struct Variable {
 }
 
 #[derive(Debug, Clone)]
+pub struct MethodHead {
+    pub head: FunctionHead,
+    pub source: Vec<String>
+}
+
+#[derive(Debug, Clone)]
 pub enum ResourceKind {
     Function(FunctionHead),
-    Method(FunctionHead),
+    Method(MethodHead),
     Type(TypeDefinition),
     #[allow(dead_code)]
     Variable(Variable),

@@ -2,7 +2,7 @@ use std::{fmt::Display, collections::HashMap};
 
 use crate::ast::Literal;
 
-use super::{AnalysisError, resources::{Scope, VariableOrAttribute, Variable}};
+use super::{AnalysisError, resources::{Scope, VariableOrAttribute, Variable, FunctionHead, MethodHead}};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum BinaryOperator {
@@ -81,14 +81,14 @@ pub enum ExpressionData {
     },
     ParenBlock(Box<Expression>),
     FunctionCall {
+        head: FunctionHead,
         function: Vec<String>,
         arguments: Vec<Expression>,
-        id: usize,
     },
     MethodCall {
+        head: MethodHead,
         method: String,
         arguments: Vec<Expression>,
-        id: usize
     },
     StructMember {
         instance: Box<Expression>,
@@ -191,6 +191,14 @@ impl Type {
                 })
             },
             _ => None,
+        }
+    }
+
+    pub(crate) fn definition_module(&self) -> &[String] {
+        match self {
+            Type::Path(path) => &path[..path.len()-1],
+            Type::Void => todo!("definition module for void type"),
+            Type::Reference { inner, mutable } => inner.definition_module()
         }
     }
 }

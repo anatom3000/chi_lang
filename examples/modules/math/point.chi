@@ -9,10 +9,3 @@ def (self: Point).add(other: Point) -> Point {
         y: self.y + other.y,
     }
 }
-
-def add(self: Point, other: Point) -> Point {
-    return Point {
-        x: self.x + other.x,
-        y: self.y + other.y,
-    }
-}

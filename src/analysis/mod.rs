@@ -11,7 +11,7 @@ use crate::transpiler::ModuleTranspiler;
 use crate::{lexer, parser, TranspileError};
 
 use self::expression::{Expression, Type, TypeDefinition, TypeKind, UnaryOperator};
-use self::resources::{FunctionHead, Resource, Scope, LocatedScope, Visibility, Variable, GLOBAL_SCOPE};
+use self::resources::{FunctionHead, Resource, Scope, LocatedScope, Visibility, Variable, GLOBAL_SCOPE, MethodHead};
 
 
 #[macro_use]
@@ -504,7 +504,13 @@ impl ModuleScope {
 
                             let func = FunctionScope::new(body, head.clone());
 
-                            self.add_resource(method_name.clone(), Resource { kind: ResourceKind::Method(head), visibility })?;
+                            self.add_resource(method_name.clone(), Resource {
+                                kind: ResourceKind::Method(MethodHead {
+                                    head,
+                                    source: self.path.clone()
+                                }), 
+                                visibility
+                            })?;
                             self.declared_methods.push((method_name, func));
                         }
                     }

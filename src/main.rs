@@ -9,8 +9,7 @@ fn main() -> ExitCode {
     let src = match args.get(1) {
         Some(path) => path,
         None => {
-            eprintln!("Please provide an input file as the first argument");
-            eprintln!("Exitting...");
+            eprintln!("Usage: {} <program.chi>", args[0]);
             return ExitCode::FAILURE;
         }
     };

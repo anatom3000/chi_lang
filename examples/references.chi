@@ -21,7 +21,7 @@ def main() {
     let ref_to_a = &a // an immutable reference to `a`
     let mutable_ref_to_a = !a // a mutable reference to `a`
 
-    // There is no concept of "borrowing", references are just pointers with extra mutability guarantees.
+    // There is no concept of "borrowing", references are just pointers with extra mutability semantics.
     // See how we can get multiple mutable references to the same data! (don't tell the Rust people)
     let another_mutable_ref_to_a = !a
 

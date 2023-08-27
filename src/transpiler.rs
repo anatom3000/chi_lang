@@ -1,7 +1,7 @@
 use std::{collections::{HashMap, HashSet}, fmt::Display};
 
 use crate::{
-    analysis::{ModuleScope, Statement, resources::{Scope, FunctionHead, Resource, ResourceKind, GLOBAL_SCOPE, LocatedScope}, expression::{TypeKind, ExpressionData, Type}},
+    analysis::{ModuleScope, Statement, resources::{Scope, FunctionHead, Resource, ResourceKind, LocatedScope}, expression::{TypeKind, ExpressionData, Type}},
     ast::Literal,
 };
 
@@ -253,13 +253,7 @@ impl<'a> ModuleTranspiler<'a> {
                     self.transpile_expression(&right.data)
                 )
             }
-            ExpressionData::FunctionCall { function, arguments, id } => {
-                
-                use super::analysis::resources::FunctionsOrMethod::*;
-                let head = match GLOBAL_SCOPE.get_function_head(&function).expect("called function exists") {
-                    Functions(funcs) => funcs.get(*id).unwrap_or_else(|| panic!("out of bounds {function:?}")).clone(),
-                    Method { .. } => unreachable!("function call is not a method call")
-                };
+            ExpressionData::FunctionCall { function, arguments, head } => {
                 let name = if head.no_mangle {
                     function.last().expect("path is not empty").clone()
                 } else {
@@ -272,12 +266,10 @@ impl<'a> ModuleTranspiler<'a> {
                     .join(", ");
                 format!("{name}({args})")
             }
-            ExpressionData::MethodCall { method, arguments, id } => {
+            ExpressionData::MethodCall { method, arguments, head } => {
                 let receiver = arguments[0].type_.clone();
-
-                let head = self.scope.get_method_head(method.clone()).expect("called method exists")[*id];
                 
-                let name = self.mangle_method(&receiver, &method, &self.scope.path, head);
+                let name = self.mangle_method(&receiver, &method, &head.source, &head.head);
                 let args = arguments
                     .into_iter()
                     .map(|e| self.transpile_expression(&e.data))
