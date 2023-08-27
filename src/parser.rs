@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::vec;
 
-use crate::analysis::Visibility;
+use crate::analysis::resources::Visibility;
 use crate::ast::{self, Expression, Import, Literal, Statement, Type, FunctionKind};
 use crate::lexer::{self, Token, TokenData};
 

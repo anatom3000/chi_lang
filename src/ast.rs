@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{lexer::TokenData, analysis::Visibility};
+use crate::{lexer::TokenData, analysis::resources::Visibility};
 
 #[derive(Debug, Clone)]
 pub enum Literal {

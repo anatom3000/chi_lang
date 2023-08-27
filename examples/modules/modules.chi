@@ -22,6 +22,8 @@ def main() {
         y: -1.0
     }
 
+    let tmp = point.add(origin, p)
+
     // let diff = (origin).add(p)
 
     // relative path

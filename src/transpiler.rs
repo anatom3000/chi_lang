@@ -1,7 +1,7 @@
 use std::{collections::{HashMap, HashSet}, fmt::Display};
 
 use crate::{
-    analysis::{ExpressionData, ModuleScope, ResourceKind, Statement, Type, TypeKind, get_global_resource, Resource, extract_function_head, FunctionHead},
+    analysis::{ModuleScope, Statement, resources::{Scope, FunctionHead, Resource, ResourceKind, GLOBAL_SCOPE, LocatedScope}, expression::{TypeKind, ExpressionData, Type}},
     ast::Literal,
 };
 
@@ -19,7 +19,7 @@ impl<'a> ModuleTranspiler<'a> {
 
     pub fn transpile(
         scope: &'a ModuleScope,
-    ) -> ModuleTranspiler { 
+    ) -> ModuleTranspiler<'a> { 
         let mut new = ModuleTranspiler {
             indent: 0,
             scope,
@@ -254,12 +254,12 @@ impl<'a> ModuleTranspiler<'a> {
                 )
             }
             ExpressionData::FunctionCall { function, arguments, id } => {
-
-                // TODO: function overloading
-                let head = extract_function_head(
-                    get_global_resource(&function, None)
-                    .expect("called function exists")
-                ).expect("called function exists")[*id];
+                
+                use super::analysis::resources::FunctionsOrMethod::*;
+                let head = match GLOBAL_SCOPE.get_function_head(&function).expect("called function exists") {
+                    Functions(funcs) => funcs.get(*id).unwrap_or_else(|| panic!("out of bounds {function:?}")).clone(),
+                    Method { .. } => unreachable!("function call is not a method call")
+                };
                 let name = if head.no_mangle {
                     function.last().expect("path is not empty").clone()
                 } else {

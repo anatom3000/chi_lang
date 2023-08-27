@@ -2,7 +2,7 @@ use std::{io, fs};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use analysis::{AnalysisError, ModuleScope, PACKAGES};
+use analysis::{AnalysisError, ModuleScope, resources::PACKAGES};
 use compilation::CompilationError;
 use parser::ParserError;
 

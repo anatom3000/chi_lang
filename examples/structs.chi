@@ -42,7 +42,7 @@ def main() {
     let result = origin.add(Point { x: 2.0, y: 40.0 })
 
     // method overloading is supported
-    let origin_offset = origin.add(5.0)
+    let origin_offset = origin.add(5.0).add(2.0)
     printf("origin_offset is at (%f, %f).\n", origin_offset.x, origin_offset.y)
 
 

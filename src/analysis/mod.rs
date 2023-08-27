@@ -1,99 +1,24 @@
-use std::cell::UnsafeCell;
 use std::collections::HashMap;
 use std::ffi::OsStr;
-use std::fmt::Display;
-use std::hash::Hash;
 use std::path::PathBuf;
-use std::{fs, mem, vec, iter};
+use std::{fs, mem, vec, iter, ptr};
 
-use crate::ast::{self, Literal, FunctionKind};
+use crate::analysis::expression::BinaryOperator;
+use crate::analysis::resources::ResourceKind;
+use crate::ast::{self, FunctionKind};
 use crate::parser::ParserError;
 use crate::transpiler::ModuleTranspiler;
 use crate::{lexer, parser, TranspileError};
 
+use self::expression::{Expression, Type, TypeDefinition, TypeKind, UnaryOperator};
+use self::resources::{FunctionHead, Resource, Scope, LocatedScope, Visibility, Variable, GLOBAL_SCOPE};
+
 
 #[macro_use]
-pub mod builtins;
+pub(crate) mod builtins;
+pub(crate) mod resources;
+pub(crate) mod expression;
 
-
-// I know this is really bad but I don't care
-pub(crate) struct GlobalPackage(pub(crate) UnsafeCell<HashMap<String, ResourceKind>>);
-
-impl GlobalPackage {
-    fn new() -> Self {
-        GlobalPackage(UnsafeCell::new(HashMap::new()))
-    }
-    
-    pub fn get_res(&self, k: &String) -> Option<&ResourceKind> {
-        unsafe { &*self.0.get() }.get(k)
-    }
-
-    pub fn get_mut(&self, k: &String) -> Option<&mut ModuleScope> {
-        match self.get_res_mut(k)? {
-            ResourceKind::Module(m) => Some(m),
-            _ => unreachable!("resources stored in global package should a module")
-        }
-    }
-    
-    pub fn get_res_mut(&self, k: &String) -> Option<&mut ResourceKind> {
-        unsafe { &mut *self.0.get() }.get_mut(k)
-    }
-
-    pub fn insert(&self, k: String, v: ModuleScope) {
-        unsafe { &mut *self.0.get() }.insert(k, ResourceKind::Module(v));
-    }
-}
-
-// peak Rust moment
-unsafe impl Sync for GlobalPackage {}
-
-// look, I tried everything but this is the simplest solution
-// I am NOT using RwLock<HashMap<String, Arc<RwLock<ModuleScope>>>>
-thread_local! {
-    pub(crate) static PACKAGES: GlobalPackage = GlobalPackage::new();
-}
-
-
-pub(crate) fn get_global_resource<'a, 'b>(path: &'a [String], from: Option<&[String]>) -> Result<Vec<&'b ResourceKind>, AnalysisError> {
-    PACKAGES.with(|p| 
-        p.get_res(&path[0])
-        .ok_or_else(|| AnalysisError::UnknownResource{path: Vec::from(path), found: None})
-        .and_then(|m| {
-            if path.len() == 1 {
-                Ok(vec![m])
-            } else {
-                match m {
-                    ResourceKind::Module(m) => Ok(m.get_local_resource(&path[1..], from)?
-                        .into_iter()
-                        .collect()),
-                    _ => unreachable!("resources stored in global package are modules")
-                }
-            }
-            
-        })
-        .map(|x| x.into_iter().map(|y| unsafe { &*(y as *const _) }).collect()) // lifetimes!
-    )
-}
-
-pub(crate) fn extract_function_head<'a>(
-            resources: Vec<&'a ResourceKind>,
-        ) -> Result<Vec<&'a FunctionHead>, AnalysisError> {
-    Ok(resources.into_iter().filter_map(|x| match x {
-        ResourceKind::Function(func) => Some(func),
-        _ => None
-    }).collect())
-}
-
-pub(crate) fn extract_type<'a>(
-            resources: Vec<&'a ResourceKind>,
-            path: &[String]
-        ) -> Result<&'a TypeDefinition, AnalysisError> {
-    Ok(resources.iter().filter_map(|x| match x {
-        ResourceKind::Type(ty) => Some(ty),
-        _ => None
-    }).next()
-    .ok_or(AnalysisError::UnknownResource { path: path.into(), found: resources.into_iter().next().cloned() })?)
-}
 
 #[derive(Debug, Clone)]
 pub enum AnalysisError {
@@ -101,7 +26,7 @@ pub enum AnalysisError {
     UnknownUnaryOperator(lexer::TokenData),
     UnknownResource{
         path: Vec<String>,
-        found: Option<ResourceKind>,
+        found: Vec<ResourceKind>,
     },
     UnsupportedBinaryOperation {
         op: BinaryOperator,
@@ -214,297 +139,6 @@ impl AnalysisError {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub enum BinaryOperator {
-    Plus,
-    Minus,
-    Mul,
-    Div,
-    Equal,
-    NotEqual,
-    Greater,
-    GreaterOrEqual,
-    Lesser,
-    LesserOrEqual,
-}
-
-impl Display for BinaryOperator {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use BinaryOperator::*;
-        write!(
-            f,
-            "{}",
-            match *self {
-                Plus => "+",
-                Minus => "-",
-                Mul => "*",
-                Div => "/",
-                Equal => "==",
-                NotEqual => "!=",
-                Greater => ">",
-                GreaterOrEqual => ">=",
-                Lesser => "<",
-                LesserOrEqual => "<=",
-            }
-        )
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum UnaryOperator {
-    Not,
-    Plus,
-    Minus,
-    Ref,
-    MutRef,
-    Deref,
-}
-
-impl Display for UnaryOperator {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use UnaryOperator::*;
-        write!(
-            f,
-            "{}",
-            match *self {
-                Not => "not",
-                Plus => "+",
-                Minus => "-",
-                Ref => "&",
-                MutRef => "!",
-                Deref => "*",
-            }
-        )
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) enum CoercionMethod {
-    None,
-    Ref,
-    MutRef,
-    Nested {
-        inner: Box<CoercionMethod>,
-        then: Box<CoercionMethod>
-    }
-}
-
-impl CoercionMethod {
-    fn apply(&self, module: &ModuleScope, value: Expression, allow_implicit_mutable_coercion: bool) -> Result<Expression, AnalysisError> {
-        match self {
-            Self::None => Ok(value),
-            Self::Ref => Ok(Expression {
-                type_: Type::Reference { inner: Box::new(value.type_.clone()), mutable: false },
-                data: ExpressionData::Unary { operator: UnaryOperator::Ref, argument: Box::new(value) },
-                mutable: false,
-            }),
-            Self::MutRef => {
-                if !allow_implicit_mutable_coercion || !value.mutable {
-                    return Err(AnalysisError::ExpectedMutableValue { value })
-                }
-
-                Ok(Expression {
-                    type_: Type::Reference { inner: Box::new(value.type_.clone()), mutable: true },
-                    data: ExpressionData::Unary { operator: UnaryOperator::Ref, argument: Box::new(value) },
-                    mutable: true,
-                })
-            },
-            Self::Nested { inner, then } => {
-                let value = inner.apply(module, value, allow_implicit_mutable_coercion)?;
-                let value = then.apply(module, value, allow_implicit_mutable_coercion)?;
-                Ok(value)
-            }
-        }
-    }
-}
-
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub enum Type {
-    Void,
-    Path(Vec<String>),
-    // Array {
-    //     base: Box<Type>,
-    //     size: String
-    // },
-    Reference{
-        inner: Box<Type>,
-        mutable: bool
-    },
-    // Function {
-    //     return_type: Box<Type>,
-    //     arguments: Vec<Type>
-    // }
-}
-
-impl Type {
-    fn mutability_hint(&self) -> bool {
-        !matches!(self, Type::Reference { inner: _, mutable: false })
-    }
-    
-    fn coerce_method(&self, module: &ModuleScope, expected: &Type) -> Option<CoercionMethod> {
-        match (expected, self) {
-            (expected, found) if expected == found => (expected == found).then_some(CoercionMethod::None),
-            (Type::Reference { inner: expected_inner, mutable: false }, Type::Reference { inner: found_inner, mutable: true }) 
-                => found_inner.coerce_method(module, expected_inner),
-            (Type::Reference { inner, mutable }, found) => {
-                Some(CoercionMethod::Nested {
-                    inner: Box::new(found.coerce_method(module, inner)?), 
-                    then:  Box::new(if *mutable {CoercionMethod::MutRef} else {CoercionMethod::Ref})
-                })
-            },
-            _ => None,
-        }
-    }
-}
-
-impl Display for Type {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.clone() {
-            Self::Void => write!(f, "void"),
-            Self::Path(name) => write!(f, "{}", name.join(".")),
-            // Self::Array { base, size } => write!(f, "{}[{}]", base, size),
-            Self::Reference{inner, mutable: false} => write!(f, "&{}", inner),
-            Self::Reference{inner, mutable: true}  => write!(f, "!{}", inner),
-            // Self::Function { return_type, arguments } => {
-            //     write!(f, "def(")?;
-            //     write!(f, "{}", arguments.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "))?;
-            //     match *return_type {
-            //         Self::Void => write!(f, ")"),
-            //         return_type => write!(f, ") -> {}", return_type),
-            //     }
-            // }
-        }
-    }
-}
-
-impl std::fmt::Debug for Type {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{self}")
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum ExpressionData {
-    Binary {
-        left: Box<Expression>,
-        operator: BinaryOperator,
-        right: Box<Expression>,
-    },
-    Unary {
-        operator: UnaryOperator,
-        argument: Box<Expression>,
-    },
-    ParenBlock(Box<Expression>),
-    FunctionCall {
-        function: Vec<String>,
-        arguments: Vec<Expression>,
-        id: usize,
-    },
-    MethodCall {
-        method: String,
-        arguments: Vec<Expression>,
-        id: usize
-    },
-    StructMember {
-        instance: Box<Expression>,
-        member: String,
-    },
-    StructInit {
-        path: Vec<String>,
-        members: HashMap<String, Expression>,
-    },
-    Variable(Vec<String>),
-    Literal(Literal),
-}
-
-#[derive(Debug, Clone)]
-pub struct Expression {
-    pub data: ExpressionData,
-    pub type_: Type,
-    pub mutable: bool,
-}
-
-impl Expression {
-    fn type_lhs(&self, scope: &FunctionScope, module: &ModuleScope) -> Result<Type, AnalysisError> {
-        match &self.data {
-            ExpressionData::Variable(name) => match scope.get_variable(module, name)? {
-                VariableOrAttribute::Attribute(expr) => Ok(expr.type_),
-                VariableOrAttribute::Variable(Variable { type_, mutable }) => match mutable {
-                    true => Ok(type_.clone()),
-                    false => Err(AnalysisError::WriteOnImmutableReference)
-                },
-            },
-            ExpressionData::StructMember { instance, member } => {
-                let instance_type = module.get_named_type(&instance.type_)
-                    .map_err(|e| e.with_member(member.clone()))?;
-
-                match instance_type.kind {
-                    TypeKind::Struct { ref members } => Ok(members
-                        .get(member as &str)
-                        .ok_or(AnalysisError::UnknownMember {
-                            instance_type: instance.type_.clone(),
-                            member: member.clone(),
-                        })?
-                        .clone()),
-                    _ => {
-                        return Err(AnalysisError::MemberAccessOnNonStruct {
-                            instance_type: instance.type_.clone(),
-                            member: member.clone(),
-                        })
-                    }
-                }
-            }
-            ExpressionData::Unary {
-                operator: UnaryOperator::Deref,
-                argument,
-            } => {
-                argument.type_lhs(scope, module)?;
-                Ok(self.type_.clone())
-            }
-            _ => Err(AnalysisError::AssignmentOnValue {
-                value: self.clone(),
-            }),
-        }
-    }
-
-    fn coerce_to_new(self, module: &ModuleScope, expected: &Type, allow_implicit_mutable_coercion: bool) -> Result<Expression, AnalysisError> {
-        let method = self.type_.coerce_method(module, expected)
-            .ok_or_else(|| AnalysisError::UnexpectedType { expected: expected.clone(), found: self.type_.clone() })?;
-        
-        method.apply(module, self, allow_implicit_mutable_coercion)
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct FunctionHead {
-    pub(crate) return_type: Type,
-    pub(crate) arguments: Vec<(String, Type)>,
-    pub(crate) is_variadic: Option<bool>,
-    pub(crate) no_mangle: bool
-}
-
-#[derive(Debug, Clone)]
-pub enum TypeKind {
-    Primitive,
-    Struct { members: HashMap<String, Type> },
-}
-
-#[derive(Clone, Debug)]
-pub struct TypeDefinition {
-    pub(crate) kind: TypeKind,
-    binary_operations: HashMap<BinaryOperator, HashMap<Type, Type>>,
-    unary_operations: HashMap<UnaryOperator, Type>,
-}
-
-impl TypeDefinition {
-    fn apply_binary(&self, op: BinaryOperator, right: Type) -> Option<&Type> {
-        self.binary_operations.get(&op)?.get(&right)
-    }
-
-    fn apply_unary(&self, op: UnaryOperator) -> Option<&Type> {
-        self.unary_operations.get(&op)
-    }
-}
 
 #[derive(Clone, Debug)]
 pub(crate) enum Statement {
@@ -532,197 +166,137 @@ pub(crate) enum Statement {
     Import(String),
 }
 
-#[derive(Debug, Clone)]
-pub struct Variable {
-    type_: Type,
-    mutable: bool,
-}
-
-pub(crate) enum VariableOrAttribute<'a> {
-    Variable(&'a Variable),
-    Attribute(Expression),
-}
-
-pub(crate) enum FunctionsOrMethod<'a> {
-    Functions(Vec<&'a FunctionHead>),
-    Method {
-        instance: Expression,
-        method_name: String
-    },
-}
-
-
 
 #[derive(Clone, Debug)]
 pub struct FunctionScope {
     pub(crate) head: FunctionHead,
     pub(crate) source: Vec<ast::Statement>,
     pub(crate) statements: Vec<Statement>,
-    pub(crate) variables: HashMap<String, Variable>,
+    pub(crate) resources: HashMap<String, Vec<ResourceKind>>,
+    pub(crate) module: *mut ModuleScope
 }
 
 impl FunctionScope {
-    fn get_method_head<'a>(
-        &'a self,
-        module: &'a ModuleScope,
-        name: String,
-    ) -> Result<Vec<&FunctionHead>, AnalysisError> {
-        module.get_method_head(name)
-    }
-
-    fn select_overload<'a>(&'a self, module: &ModuleScope, overloaded_functions: &'a [&FunctionHead], typed_args: Vec<Expression>, is_method: bool) -> Result<(usize, &FunctionHead, Vec<Expression>), AnalysisError> {
-        let arg_n = typed_args.len();
-
-        let mut candidates = vec![];
-        'overloaded_loop: for (id, function) in overloaded_functions.iter().enumerate() {
-            let mut coercions = vec![];
-            if let Some(true) = function.is_variadic {
-                if function.arguments.len() > arg_n {
-                    continue 'overloaded_loop;
-                }
-
-                for (index, found) in typed_args.iter().enumerate() {
-                    match function.arguments.get(index) {
-                        Some(expected) => {
-                            let should_be_mutable = expected.1.mutability_hint();
-
-                            let coercion = match found.type_.coerce_method(module, &expected.1) {
-                                Some(way) => way,
-                                None => continue 'overloaded_loop,
-                            };
-
-                            coercions.push((coercion, Some(should_be_mutable)))
-                        }
-                        None => {
-                            // we cannot coerce the argument because the parameter is variadic
-                            coercions.push((CoercionMethod::None, None))
-                        }
-                    }
-                }
+    fn module(&self) -> &mut ModuleScope {
+        unsafe {
+            if self.module == ptr::null_mut() {
+                panic!("attempt to access parent ModuleScope while FuntionScope did not have access it")
             } else {
-                if function.arguments.len() != arg_n {
-                    continue;
-                }
-
-                for (expected, found) in std::iter::zip(&function.arguments, &typed_args) {
-                    // TODO: ownership
-                    let should_be_mutable = expected.1.mutability_hint();
-
-                    let coercion = match found.type_.coerce_method(module, &expected.1) {
-                        Some(way) => way,
-                        None => continue 'overloaded_loop,
-                    };
-            
-                    coercions.push((coercion, Some(should_be_mutable)))
-                }
-            
+                &mut *self.module
             }
-        
-            candidates.push((id, function, coercions))
-        }
-
-        let (id, function, coercions) = match candidates.len() {
-            0 => return Err(AnalysisError::InvalidArguments { 
-                expected: overloaded_functions.into_iter().cloned()
-                    .map(|x| x.arguments.iter().cloned().map(|a| a.1).collect())
-                    .collect(), 
-                found: typed_args.into_iter().map(|x| x.type_).collect()
-            }),
-            1 => candidates.pop().expect("candidates' length is 1"),
-            _ => todo!("solve non-trivial function overloading - candidates are {candidates:#?}")
-        };
-
-        let mut first = true;
-        let mut coerced_args = vec![];
-        for (arg, (coercion, _)) in iter::zip(typed_args, coercions) {
-            coerced_args.push(coercion.apply(module, arg, first && is_method)?);
-            first = false;
-        }
-
-        Ok((id, function, coerced_args))
-
-    }
-
-    fn get_function_head<'a>(
-        &'a self,
-        module: &'a ModuleScope,
-        path: &[String],
-    ) -> Result<FunctionsOrMethod, AnalysisError> {
-        if path.len() == 1 {
-            return Ok(FunctionsOrMethod::Functions(module.get_function_head(path)?))
-        }
-
-        let instance = match self.get_variable(module, &path[..path.len()-1]) {
-            Ok(VariableOrAttribute::Variable(Variable { type_, mutable })) => Expression {
-                data: ExpressionData::Variable(path[..path.len()-1].into()),
-                type_: type_.clone(),
-                mutable: *mutable
-            },
-            Ok(VariableOrAttribute::Attribute(expr)) => expr,
-            Err(_) => return module.get_function_head(path).map(|x| FunctionsOrMethod::Functions(x))
-        };
-
-        Ok(FunctionsOrMethod::Method {
-            instance,
-            method_name: path.last().expect("path is not empty").clone()
-        })
-    }
-
-    fn get_variable<'a>(
-        &'a self,
-        module: &'a ModuleScope,
-        path: &[String],
-    ) -> Result<VariableOrAttribute, AnalysisError> {
-        match self.variables.get(&path[0]) {
-            Some(var) if path.len() == 1 => return Ok(VariableOrAttribute::Variable(var)),
-            Some(Variable { type_, mutable }) => Ok(VariableOrAttribute::Attribute(module.get_type_member(
-                Expression {
-                    data: ExpressionData::Variable(vec![path[0].clone()]),
-                    type_: type_.clone(),
-                    mutable: *mutable
-                },
-                &path[1..],
-            )?)),
-            None => Ok(VariableOrAttribute::Variable(module.get_variable(path)?)),
         }
     }
 
-    fn execution_pass(&mut self, module: &ModuleScope) -> Result<(), AnalysisError> {
+    fn execution_pass(&mut self) -> Result<(), AnalysisError> {
         let source = mem::take(&mut self.source);
 
         // TODO: accumulate errors in a vector to catch more than one error at compile time
         for stmt in source {
-            let stmt = self.analyse_statement(module, stmt.clone())?;
+            let stmt = self.analyse_statement(stmt.clone())?;
 
             self.statements.push(stmt);
         }
         Ok(())
     }
 
-    fn analyse_statement(
-        &mut self,
-        module: &ModuleScope,
-        stmt: ast::Statement,
-    ) -> Result<Statement, AnalysisError> {
+    fn add_resource(&mut self, at: String, mut resource: ResourceKind) -> Result<(), AnalysisError> {
+        use std::collections::hash_map::Entry;
+
+        // borrowing rules! (or does it?)
+        let unsafe_self = unsafe {&mut *(self as *mut _)};
+
+        match self.resources.entry(at) {
+            Entry::Vacant(x) => {
+                x.insert(vec![resource]);
+            },
+            Entry::Occupied(mut x) => {
+                match &mut resource {
+                    ResourceKind::Alias(_)
+                    | ResourceKind::Module(_)
+                    => {
+                        if x.get().iter().all(|r| matches!(r, ResourceKind::Method(_))) {
+                            // methods are not real resources, no disambiguation required
+                            x.get_mut().push(resource);
+                        } else {
+                            return Err(AnalysisError::ResourceShadowing { name: x.key().clone() })
+                        }
+                    },
+                    ResourceKind::Variable(var_to_insert) => {
+                        // allow variable overloading in function scopes
+                        
+                        for res in x.get_mut() {
+                            match res {
+                                ResourceKind::Method(_) => (),
+                                ResourceKind::Variable(old_var) => {
+                                    mem::swap(old_var, var_to_insert)
+                                },
+                                _ => return Err(AnalysisError::ResourceShadowing { name: x.key().clone() })
+                            }
+                        }
+                    }
+                    ResourceKind::Function(head) => {
+                        for res in x.get() {
+                            match &res {
+                                ResourceKind::Function(existing_head) => {
+                                    if existing_head.arguments.len() == head.arguments.len() {
+
+                                        let is_similar = 
+                                            iter::zip(&existing_head.arguments, &head.arguments)
+                                            .all(|((_, existing), (_, new))| 
+                                                   existing.coerce_method(unsafe_self, new).is_some() 
+                                                || new.coerce_method(unsafe_self, existing).is_some()
+                                            );
+
+                                        if is_similar {
+                                            return Err(AnalysisError::AmbiguousOverloading {
+                                                defined: head.clone(),
+                                                conflicting: existing_head.clone()
+                                            });
+                                        }
+                                    }
+                                },
+                                ResourceKind::Method(_) // methods are not real
+                                | ResourceKind::Type(_) // to support constructors as plain functions
+                                    => (),
+                                ResourceKind::Alias     (_)
+                                | ResourceKind::Module  (_) 
+                                | ResourceKind::Variable(_) 
+                                    => return Err(AnalysisError::ResourceShadowing { name: x.key().clone() })
+                            }
+                        }
+                        x.get_mut().push(resource);
+                    },
+                    ResourceKind::Method(_) => x.get_mut().push(resource),
+                    _ => todo!()
+                }
+            }
+        };
+
+        Ok(())
+    }
+
+
+    fn analyse_statement(&mut self, stmt: ast::Statement) -> Result<Statement, AnalysisError> {
         match stmt {
-            ast::Statement::Expression(expr) => Ok(Statement::Expression(self.type_expression(module, expr, false)?)),
+            ast::Statement::Expression(expr) => Ok(Statement::Expression(self.type_expression(expr, false)?)),
             ast::Statement::LetAssignment { name, value } => {
-                let rhs = self.type_expression(module, value, true)?;
-                self.variables.insert(name.clone(), Variable {
+                let rhs = self.type_expression(value, true)?;
+
+                self.add_resource(name.clone(), ResourceKind::Variable(Variable {
                     type_: rhs.type_.clone(),
-                    mutable: rhs.type_.mutability_hint()
-                });
+                    mutable: true
+                }))?;
                 Ok(Statement::LetAssignment {
                     name: name,
                     value: rhs,
                 })
             }
             ast::Statement::Assignment { lhs, rhs } => {
-                let lhs = self.type_expression(module, lhs, true)?;
-                let lhs_ty = lhs.type_lhs(self, module)?;
+                let lhs = self.type_expression(lhs, true)?;
+                let lhs_ty = lhs.type_lhs(self)?;
 
-                let rhs = self.type_expression(module, rhs, false)?
-                    .coerce_to_new(module, &lhs_ty, false)?;
+                let rhs = self.type_expression(rhs, false)?
+                    .coerce_to_new(self, &lhs_ty, false)?;
 
                 Ok(Statement::Assignment { lhs, rhs })
             }
@@ -733,12 +307,12 @@ impl FunctionScope {
                 let mut typed_conditions_and_bodies = vec![];
                 for (condition, body) in conditions_and_bodies {
                     // TODO: invalidate variables that may not exist (let var = ... in if block)
-                    let typed_condition = self.type_expression(module, condition, false)?
-                        .coerce_to_new(module, &type_!(bool), false)?;
+                    let typed_condition = self.type_expression(condition, false)?
+                        .coerce_to_new(self, &type_!(bool), false)?;
 
                     let mut inner = vec![];
                     for stmt in body {
-                        inner.push(self.analyse_statement(module, stmt)?);
+                        inner.push(self.analyse_statement(stmt)?);
                     }
                     typed_conditions_and_bodies.push((typed_condition, inner))
                 }
@@ -747,7 +321,7 @@ impl FunctionScope {
                     Some(body) => {
                         let mut inner = vec![];
                         for stmt in body {
-                            inner.push(self.analyse_statement(module, stmt)?);
+                            inner.push(self.analyse_statement(stmt)?);
                         }
 
                         Ok(Statement::If {
@@ -762,12 +336,12 @@ impl FunctionScope {
                 }
             }
             ast::Statement::While { condition, body } => {
-                let condition = self.type_expression(module, condition, false)?
-                    .coerce_to_new(module, &type_!(bool), false)?;
+                let condition = self.type_expression(condition, false)?
+                    .coerce_to_new(self, &type_!(bool), false)?;
 
                 let mut inner = vec![];
                 for stmt in body {
-                    inner.push(self.analyse_statement(module, stmt)?);
+                    inner.push(self.analyse_statement(stmt)?);
                 }
 
                 Ok(Statement::While {
@@ -779,8 +353,8 @@ impl FunctionScope {
                 let expr = match expr {
                     Some(expr) => {
                         Some(
-                            self.type_expression(module, expr, false)?
-                                .coerce_to_new(module, &self.head.return_type, false)?
+                            self.type_expression(expr, false)?
+                                .coerce_to_new(self, &self.head.return_type, false)?
                         )
                     }
                     None => {
@@ -806,356 +380,25 @@ impl FunctionScope {
     }
 
     fn new(source: Vec<ast::Statement>, head: FunctionHead) -> Self {
-        let variables = HashMap::from_iter(
+        let resources = HashMap::from_iter(
             head.arguments
             .iter()
             .cloned()
-            .map(|(name, type_)| (name.clone(), Variable { mutable: type_.mutability_hint(), type_ }))
+            .map(|(name, type_)| (name.clone(), vec![ResourceKind::Variable(Variable { mutable: true, type_ })]))
         );
 
         FunctionScope {
             head,
             source,
             statements: vec![],
-            variables,
+            resources,
+            module: ptr::null_mut()
         }
     }
 
-    fn type_expression(
-        &self,
-        module: &ModuleScope,
-        expr: ast::Expression,
-        maybe_mutable: bool
-    ) -> Result<Expression, AnalysisError> {
-        match expr {
-            ast::Expression::Binary {
-                left,
-                operator,
-                right,
-            } => {
-                let left = self.type_expression(module, *left, maybe_mutable)?;
-                let right = self.type_expression(module, *right, maybe_mutable)?;
-
-                use crate::lexer::TokenData;
-                let operator = match operator {
-                    TokenData::Plus => BinaryOperator::Plus,
-                    TokenData::Minus => BinaryOperator::Minus,
-                    TokenData::Star => BinaryOperator::Mul,
-                    TokenData::Slash => BinaryOperator::Div,
-                    TokenData::Equal => BinaryOperator::Equal,
-                    TokenData::NotEqual => BinaryOperator::NotEqual,
-                    TokenData::Greater => BinaryOperator::Greater,
-                    TokenData::GreatorOrEqual => BinaryOperator::GreaterOrEqual,
-                    TokenData::Lesser => BinaryOperator::Lesser,
-                    TokenData::LesserOrEqual => BinaryOperator::LesserOrEqual,
-                    other => return Err(AnalysisError::UnknownBinaryOperator(other)),
-                };
-                match (&left.type_, &right.type_) {
-                    (Type::Path(ltype), Type::Path(rtype)) => {
-                        let ltypedef = module.get_type(ltype)?;
-                        let rtypedef = module.get_type(rtype)?;
-
-                        Ok(
-                            match ltypedef.apply_binary(operator, Type::Path(rtype.clone()))
-                            {
-                                Some(type_) => Expression {
-                                    data: ExpressionData::Binary {
-                                        left: Box::new(left),
-                                        operator,
-                                        right: Box::new(right),
-                                    },
-                                    type_: type_.clone(),
-                                    mutable: maybe_mutable && type_.mutability_hint()
-                                },
-                                None => match rtypedef.apply_binary(operator, left.type_.clone()) {
-                                    Some(type_) => Expression {
-                                        data: ExpressionData::Binary {
-                                            left: Box::new(left),
-                                            operator,
-                                            right: Box::new(right),
-                                        },
-                                        type_: type_.clone(),
-                                        mutable: maybe_mutable && type_.mutability_hint()
-                                    },
-                                    None => {
-                                        return Err(AnalysisError::UnsupportedBinaryOperation {
-                                            op: operator,
-                                            left: left.type_,
-                                            right: right.type_,
-                                        })
-                                    }
-                                },
-                            },
-                        )
-                    }
-                    (left, right) => Err(AnalysisError::UnsupportedBinaryOperation {
-                        op: operator,
-                        left: left.clone(),
-                        right: right.clone(),
-                    }),
-                }
-            }
-            ast::Expression::Unary { operator, argument } => {
-                let argument = self.type_expression(module, *argument, true)?;
-
-                use crate::lexer::TokenData;
-                let operator = match operator {
-                    TokenData::Plus => UnaryOperator::Plus,
-                    TokenData::Minus => UnaryOperator::Minus,
-                    TokenData::Not => UnaryOperator::Not,
-                    TokenData::Ref => UnaryOperator::Ref,
-                    TokenData::MutRef => UnaryOperator::MutRef,
-                    TokenData::Star => UnaryOperator::Deref,
-                    other => return Err(AnalysisError::UnknownUnaryOperator(other)),
-                };
-
-                match (argument.type_.clone(), operator) {
-                    (arg_type, UnaryOperator::Ref) => Ok(Expression {
-                        data: ExpressionData::Unary {
-                            operator: UnaryOperator::Ref,
-                            argument: Box::new(argument),
-                        },
-                        type_: Type::Reference {
-                            inner: Box::new(arg_type),
-                            mutable: false,
-                        },
-                        mutable: false
-                    }),
-                    (arg_type, UnaryOperator::MutRef) => {
-                        if !argument.mutable {
-                            return Err(AnalysisError::MutRefOfImmutableValue { value: argument })
-                        }
-
-                        Ok(Expression {
-                            data: ExpressionData::Unary {
-                                operator: UnaryOperator::Ref,
-                                argument: Box::new(argument),
-                            },
-                            type_: Type::Reference {
-                                inner: Box::new(arg_type),
-                                mutable: maybe_mutable,
-                            },
-                            mutable: maybe_mutable
-                        })
-                    },
-                    (Type::Path(path), _) => {
-                        let arg_type = module.get_type(&path)?;
-                        match arg_type.apply_unary(operator) {
-                            Some(ty) => Ok(Expression {
-                                data: ExpressionData::Unary {
-                                    operator,
-                                    argument: Box::new(argument),
-                                },
-                                type_: ty.clone(),
-                                mutable: maybe_mutable
-                            }),
-                            None => Err(AnalysisError::UnsupportedUnaryOperation {
-                                op: operator,
-                                argument: Type::Path(path),
-                            }),
-                        }
-                    }
-                    (Type::Reference{inner, mutable}, UnaryOperator::Deref) => Ok(Expression {
-                        data: ExpressionData::Unary {
-                            operator: UnaryOperator::Deref,
-                            argument: Box::new(argument),
-                        },
-                        type_: *inner,
-                        mutable: maybe_mutable && mutable,
-                    }),
-                    (argument, op) => {
-                        Err(AnalysisError::UnsupportedUnaryOperation { op, argument })
-                    }
-                }
-            }
-            ast::Expression::ParenBlock(inner) => {
-                let inner = self.type_expression(module, *inner, maybe_mutable)?;
-                let type_ = inner.type_.clone();
-                Ok(Expression {
-                    mutable: inner.mutable,
-                    data: ExpressionData::ParenBlock(Box::new(inner)),
-                    type_,
-                })
-            }
-            ast::Expression::FunctionCall {
-                function: function_name,
-                arguments,
-            } => {
-                match self.get_function_head(module, &function_name)? {
-                    FunctionsOrMethod::Functions(overloaded_functions) => {
-                        let mut typed_args = vec![];
-                        for arg in arguments {
-                            typed_args.push(self.type_expression(module, arg, true)?);
-                        }
-
-                        let (id, function, coerced_args) = self.select_overload(module, &overloaded_functions, typed_args, false)?;
-
-                        let path = module.make_path_absolute(function_name)?;
-        
-                        Ok(Expression {
-                            data: ExpressionData::FunctionCall {
-                                function: path,
-                                arguments: coerced_args,
-                                id, 
-                            },
-                            type_: function.return_type.clone(),
-                            mutable: maybe_mutable && function.return_type.mutability_hint()
-                        })
-                    },
-                    FunctionsOrMethod::Method { instance, method_name } => self.type_method_call(module, instance, method_name, arguments, maybe_mutable)
-                }
-            }
-            ast::Expression::MethodCall { instance, method, arguments } => {
-                let instance = self.type_expression(module,*instance, true)?;
-
-                self.type_method_call(module, instance, method, arguments, maybe_mutable)
-            },
-            ast::Expression::Variable(name) => Ok(match self.get_variable(module, &name)? {
-                VariableOrAttribute::Variable(var) => Expression {
-                    data: ExpressionData::Variable(name),
-                    type_: var.type_.clone(),
-                    mutable: maybe_mutable && var.mutable
-                },
-                VariableOrAttribute::Attribute(expr) => expr,
-            }),
-            ast::Expression::StructMember { instance, member } => {
-                let instance = self.type_expression(module, *instance, maybe_mutable)?;
-
-                match module.get_named_type(&instance.type_)
-                        .map_err(|e| e.with_member(member.clone()))?.kind.clone() {
-                    TypeKind::Struct { members } => {
-                        // get the type of the member if it exists, otherwise return an error
-                        let member_type = members
-                            .get(&member)
-                            .ok_or(AnalysisError::UnknownMember {
-                                instance_type: instance.type_.clone(),
-                                member: member.clone(),
-                            })?
-                            .clone();
-
-                        Ok(Expression {
-                            mutable: instance.mutable,
-                            data: ExpressionData::StructMember {
-                                instance: Box::new(instance),
-                                member,
-                            },
-                            type_: member_type,
-                        })
-                    }
-                    _ => todo!("member access for reference types"),
-                }
-            }
-            ast::Expression::StructInit { path, mut members } => {
-                let ty = module.get_type(&path)?;
-                let path = module.make_path_absolute(path)?;
-                match ty.kind.clone() {
-                    TypeKind::Struct {
-                        members: decl_members,
-                    } => {
-                        let mut typed_members = HashMap::new();
-
-                        for (m_name, m_type) in decl_members {
-                            let value = members
-                                .get(&m_name)
-                                .ok_or(AnalysisError::MissingMemberInInit {
-                                    struct_name: path.clone(),
-                                    missing: m_name.clone(),
-                                })?
-                                .clone();
-
-                            // TODO: ownership
-                            members.remove(&m_name);
-
-                            typed_members.insert(
-                                m_name, 
-                                self.type_expression(module, value, maybe_mutable)?
-                                    .coerce_to_new(module, &m_type, false)?
-                            );
-                        }
-
-                        if !members.is_empty() {
-                            return Err(AnalysisError::UnknownMember {
-                                instance_type: Type::Path(path),
-                                member: members.into_keys().next().expect("members is not empty"),
-                            });
-                        }
-
-                        Ok(Expression {
-                            data: ExpressionData::StructInit {
-                                path: path.clone(),
-                                members: typed_members,
-                            },
-                            type_: Type::Path(path.clone()),
-                            mutable: true
-                        })
-                    }
-                    _ => Err(AnalysisError::NotAStruct {
-                        found: Type::Path(path),
-                    }),
-                }
-            }
-            ast::Expression::Literal(lit) => module.type_literal(lit),
-        }
-    }
-
-    fn type_method_call(&self, module: &ModuleScope, instance: Expression, method: String, arguments: Vec<ast::Expression>, maybe_mutable: bool) -> Result<Expression, AnalysisError> {
-
-        let overloaded_methods = self.get_method_head(module, method.clone())?;
-
-
-        let mut typed_args = vec![instance];
-        for arg in arguments {
-            typed_args.push(self.type_expression(module, arg, true)?)
-        }
-
-        let (id, head, coerced_args) = self.select_overload(module, &overloaded_methods, typed_args, true)?;
-    
-
-        Ok(Expression {
-            data: ExpressionData::MethodCall {
-                method,
-                arguments: coerced_args,
-                id
-            },
-            type_: head.return_type.clone(),
-            mutable: maybe_mutable && head.return_type.mutability_hint()
-        })
-
-    }
 }
 
-#[derive(Debug, Clone)]
-pub enum ResourceKind {
-    Function(FunctionHead),
-    Method(FunctionHead),
-    Type(TypeDefinition),
-    #[allow(dead_code)]
-    Variable(Variable),
-    Module(ModuleScope),
-    Alias(Vec<String>)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Visibility {
-    Public,
-    Module,
-}
-
-impl Default for Visibility {
-    fn default() -> Self {
-        // TODO: make resources private by default
-        Visibility::Public
-    }
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct Resource {
-    pub kind: ResourceKind,
-    #[allow(dead_code)]
-    pub visibility: Visibility
-}
-
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ModuleScope {
     pub(crate) file: PathBuf,
     pub(crate) path: Vec<String>,
@@ -1167,6 +410,12 @@ pub struct ModuleScope {
     pub(crate) declared_methods: Vec<(String, FunctionScope)>,
     pub(crate) resources: HashMap<String, Vec<Resource>>,
     pub(crate) externs: Vec<String>,
+}
+
+impl std::fmt::Debug for ModuleScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "<{}Module at \"{}\">", if self.is_main{"Main "}else{""}, self.path.join("."))
+    }
 }
 
 impl ModuleScope {
@@ -1374,16 +623,23 @@ impl ModuleScope {
         let mut declared_functions = mem::take(&mut self.declared_functions);
 
         for (_, func) in &mut declared_functions {
-            func.execution_pass(self)?;
+            // SAFETY: func has exclusive access to self
+            func.module = self as *mut _;
+            func.execution_pass()?;
+            // set pointer to null to revoke access to self
+            func.module = ptr::null_mut();
         }
 
         self.declared_functions = declared_functions;
 
         let mut declared_methods = mem::take(&mut self.declared_methods);
 
-
         for (_, func) in &mut declared_methods {
-            func.execution_pass(self)?;
+            // SAFETY: func has exclusive access to self
+            func.module = self as *mut _;
+            func.execution_pass()?;
+            // set pointer to null to revoke access to self
+            func.module = ptr::null_mut();
         }
 
         self.declared_methods = declared_methods;
@@ -1395,10 +651,9 @@ impl ModuleScope {
                         m.execution_pass()?;
                     },
                     ResourceKind::Alias(path) => {
-                        get_global_resource(&path, Some(&self.path))?;
+                        GLOBAL_SCOPE.get_resource(path)?;
                     },
                     _ => {}
-
                 }
             }
         }
@@ -1406,135 +661,7 @@ impl ModuleScope {
         Ok(())
     }
 
-    fn get_local_resource(&self, path: &[String], from: Option<&[String]>) -> Result<Vec<&ResourceKind>, AnalysisError> {
-        let mut module = self;
-
-        let mut path_iter = path.iter();
-        let end = path_iter.next_back().expect("path is not empty");
-
-        for name in path_iter {
-            match module.resources.get(name).map(Vec::as_slice) {
-                Some([Resource {kind: ResourceKind::Alias(res_path), visibility: _}]) => {
-                    if let [ResourceKind::Module(m)] = get_global_resource(res_path, from)?.as_slice() {
-                        module = m;
-                    } else {
-                        return Err(AnalysisError::UnknownResource{ path: Vec::from(path), found: None })
-                    }
-                },
-                Some([Resource {kind: ResourceKind::Module(m), visibility: _}]) => {
-                    module = m;
-                },
-                _ => return Err(AnalysisError::UnknownResource{ path: Vec::from(path), found: None })
-            }
-        }
-        
-        // TODO: visibility
-        match module.resources.get(end).map(Vec::as_slice) {
-            Some([Resource { kind: ResourceKind::Alias(res_path), visibility: _ }]) => get_global_resource(res_path, from),
-            Some(found) => Ok(found.iter().map(|x| &x.kind).collect()),
-            _ => return Err(AnalysisError::UnknownResource{ path: Vec::from(path), found: None })
-        }
-        
-    }
-
-    pub(crate) fn get_resource(&self, path: &[String]) -> Result<Vec<&ResourceKind>, AnalysisError> {
-
-        if path.len() == 1 {
-            if let Some(res) = builtins::BUILTINS.get(&path[0]) {
-                return Ok(res.iter().collect()); // convert &Vec<ResourceKind> to Vec<&ResourceKind>
-            }
-        }
-
-        self.get_local_resource(path, Some(&self.path))
-    }
-
-    pub(crate) fn get_type_member(
-        &self,
-        instance: Expression,
-        path: &[String],
-    ) -> Result<Expression, AnalysisError> {
-        let typedef = self.get_named_type(&instance.type_)
-            .map_err(|e| e.with_member(path[0].clone()))?;
-
-        match &typedef.kind {
-            TypeKind::Struct { members } => match members.get(&path[0]) {
-                Some(member) => {
-                    let instance = Expression {
-                        mutable: instance.mutable,
-                        data: ExpressionData::StructMember {
-                            instance: Box::new(instance),
-                            member: path[0].clone(),
-                        },
-                        type_: member.clone(),
-                    };
-                    if path.len() == 1 {
-                        Ok(instance)
-                    } else {
-                        self.get_type_member(instance, &path[1..])
-                    }
-                }
-                None => Err(AnalysisError::UnknownMember {
-                    instance_type: instance.type_.clone(),
-                    member: path[0].clone(),
-                }),
-            },
-            _ => Err(AnalysisError::MemberAccessOnNonStruct {
-                instance_type: instance.type_.clone(),
-                member: path[0].clone(),
-            }),
-        }
-    }
-
-    pub(crate) fn get_function_head(
-        &self,
-        path: &[String],
-    ) -> Result<Vec<&FunctionHead>, AnalysisError> {
-        Ok(self.get_resource(path)?.into_iter().filter_map(|x| match x {
-            ResourceKind::Function(func) => Some(func),
-            _ => None
-        }).collect())
-    }
-
-    pub(crate) fn get_method_head(
-        &self,
-        path: String,
-    ) -> Result<Vec<&FunctionHead>, AnalysisError> {
-        Ok(self.get_resource(&vec![path])?.into_iter().filter_map(|x| match x {
-            ResourceKind::Method(func) => Some(func),
-            _ => None
-        }).collect())
-    }
-
-    pub fn get_type(&self, path: &[String]) -> Result<&TypeDefinition, AnalysisError> {
-        let resources = self.get_resource(path)?;
-
-        Ok(resources.iter().filter_map(|x| match x {
-            ResourceKind::Type(func) => Some(func),
-            _ => None
-        }).next()
-        .ok_or(AnalysisError::UnknownResource { path: path.into(), found: resources.into_iter().next().cloned() })?)
-    }
-    
-    pub fn get_variable(&self, path: &[String]) -> Result<&Variable, AnalysisError> {
-        let resources = self.get_resource(path)?;
-
-        Ok(resources.iter().filter_map(|x| match x {
-            ResourceKind::Variable(var) => Some(var),
-            _ => None
-        }).next()
-        .ok_or(AnalysisError::UnknownResource { path: path.into(), found: resources.into_iter().next().cloned() })?)
-    }
-
-    pub fn get_named_type(&self, type_: &Type) -> Result<&TypeDefinition, AnalysisError> {
-        match type_ {
-            Type::Path(path) => extract_type(get_global_resource(path, None)?, path),
-            _ => Err(AnalysisError::NotAStruct {
-                found: type_.clone()
-            })
-        }
-    }
-
-    fn add_resource(&mut self, at: String, resource: Resource) -> Result<(), AnalysisError>{        
+    fn add_resource(&mut self, at: String, resource: Resource) -> Result<(), AnalysisError> {
         use std::collections::hash_map::Entry;
 
         // borrowing rules! (or does it?)
@@ -1562,7 +689,6 @@ impl ModuleScope {
                             match &res.kind {
                                 ResourceKind::Function(existing_head) => {
                                     if existing_head.arguments.len() == head.arguments.len() {
-                                        
 
                                         let is_similar = 
                                             iter::zip(&existing_head.arguments, &head.arguments)
@@ -1632,7 +758,7 @@ impl ModuleScope {
             externs: vec![],
         };
 
-        PACKAGES.with(|p| p.insert(package.clone(), new));
+        resources::PACKAGES.with(|p| p.insert(package.clone(), new));
         
         Ok(package)
     }
@@ -1683,7 +809,7 @@ impl ModuleScope {
         } else if multiple_exists {
             multiple_files_module_root
         } else {
-            return Err(AnalysisError::UnknownResource { path: path.clone(), found: None })
+            return Err(AnalysisError::UnknownResource { path: path.clone(), found: vec![] })
         };
 
         let source = parser::Parser::from_source(&fs::read_to_string(&file).unwrap())
@@ -1700,159 +826,6 @@ impl ModuleScope {
             declared_functions: vec![],
             declared_methods: vec![],
             externs: vec![],
-        })
-    }
-
-    fn analyse_type(&self, ty: ast::Type) -> Result<Type, AnalysisError> {
-        Ok(match ty {
-            ast::Type::Void => Type::Void,
-            ast::Type::Path(name) => {
-                self.get_type(&name)?;
-                Type::Path(self.make_path_absolute(name)?)
-            }
-            ast::Type::Reference { inner, mutable } => Type::Reference {
-                inner: Box::new(self.analyse_type(*inner)?),
-                mutable: mutable
-            },
-        })
-    }
-
-    pub(crate) fn make_path_absolute(&self, mut path: Vec<String>) -> Result<Vec<String>, AnalysisError> {
-        if path.len() == 1 && builtins::BUILTINS.get(&path[0]).is_some() {
-            return Ok(path);
-        }
-
-        if self.is_main && path.len() == 1 && path[0] == "main" {
-            return Ok(path);
-        }
-
-        let mut nonlocal = false;
-        let mut absolute = Vec::with_capacity(path.len());
-
-        let mut module = self;
-
-        let mut path_iter = path.iter();
-        let end = path_iter.next_back().expect("path is not empty").clone();
-
-
-        for name in path_iter {
-            match module.resources.get(name).map(Vec::as_slice) {
-                Some([Resource {kind: ResourceKind::Alias(path), ..}]) => {
-                    if let [ResourceKind::Module(m)] = get_global_resource(&path, None)?.as_slice() {
-                        absolute.clear();
-                        absolute.append(&mut path.clone());
-                        module = m
-                    }
-                },
-                Some([Resource {kind: ResourceKind::Module(m), ..}]) => {
-                    if !nonlocal {
-                        absolute.append(&mut self.path.clone());
-                    }
-                    absolute.push(name.clone());
-                    module = m
-                },
-                _ => return Err(AnalysisError::UnknownResource { path: path.clone(), found: None }),
-            }
-            nonlocal = true;
-        }
-        
-        if nonlocal {
-            match module.resources.get(&end).map(Vec::as_slice) {
-                Some([Resource { kind: ResourceKind::Alias(res_path), .. }]) => {
-                    Ok(res_path.clone())
-                },
-                Some(_) => {
-                    absolute.push(end);
-                    Ok(absolute)
-                }
-                _ => return Err(AnalysisError::UnknownResource { path: path.clone(), found: None }),
-            }
-        } else {
-            match module.resources.get(&end).map(Vec::as_slice) {
-                Some([Resource { kind: ResourceKind::Alias(res_path), .. }]) => {
-                    Ok(res_path.clone())
-                },
-                Some(_) => {
-                    let mut absolute = self.path.clone();
-                    absolute.append(&mut path);
-                    Ok(absolute)
-                }
-                _ => return Err(AnalysisError::UnknownResource { path: path.clone(), found: None }),
-            }
-            
-        }       
-    }
-
-    fn type_literal(&self, value: Literal) -> Result<Expression, AnalysisError> {
-        let type_ = match &value {
-            Literal::String(_) => type_!(str),
-            Literal::Integer {
-                value: _,
-                signed,
-                size,
-            } => match size {
-                None => {
-                    if *signed {
-                        type_!(int)
-                    } else {
-                        type_!(uint)
-                    }
-                }
-                Some(8) => {
-                    if *signed {
-                        type_!(int8)
-                    } else {
-                        type_!(uint8)
-                    }
-                }
-                Some(16) => {
-                    if *signed {
-                        type_!(int16)
-                    } else {
-                        type_!(uint16)
-                    }
-                }
-                Some(32) => {
-                    if *signed {
-                        type_!(int32)
-                    } else {
-                        type_!(uint32)
-                    }
-                }
-                Some(64) => {
-                    if *signed {
-                        type_!(int64)
-                    } else {
-                        type_!(uint64)
-                    }
-                }
-                Some(other) => {
-                    return Err(AnalysisError::UnknownIntegerSize {
-                        found: *other,
-                        expected: &[8, 16, 32, 64],
-                    })
-                }
-            },
-            Literal::Float { value: _, size } => match size {
-                None => type_!(float),
-                Some(32) => type_!(float32),
-                Some(64) => type_!(float64),
-                Some(128) => type_!(float128),
-                Some(other) => {
-                    return Err(AnalysisError::UnknownFloatSize {
-                        found: *other,
-                        expected: &[32, 64, 128],
-                    })
-                }
-            },
-            Literal::Null => type_!(&void),
-            Literal::False | Literal::True => type_!(bool),
-        };
-
-        Ok(Expression {
-            data: ExpressionData::Literal(value),
-            type_,
-            mutable: true
         })
     }
 
