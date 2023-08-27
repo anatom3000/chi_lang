@@ -10,7 +10,7 @@ def main() {
     let pi = 3.14                      // type: float
     let also_pi = 3.14f                // type: float
     let pi_but_less_precise = 3.14f32  // type: float32
-    let pi_but_more_precise = 3.14f128 // type: float128
+    let pi_but_more_precise = 3.14f64  // type: float64
 
     // string
     let message = "Hello, Chi!" // type: str (arrays are not implemented yet)

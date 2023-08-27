@@ -15,7 +15,7 @@ pub fn compile(transpiled_file: PathBuf, log_file: PathBuf, binary_file: PathBuf
     #[cfg(target_os = "windows")]
     return Err(CompilationError::UnsupportedPlatform("windows"));
 
-    let command = format!("cc {} -o {}", transpiled_file.display(), binary_file.display());
+    let command = format!("clang {} -o {} -Wall -Wextra", transpiled_file.display(), binary_file.display());
 
     let output = Command::new("sh")
         .arg("-c")
@@ -23,7 +23,7 @@ pub fn compile(transpiled_file: PathBuf, log_file: PathBuf, binary_file: PathBuf
         .output()
         .map_err(|e| CompilationError::IoError(e))?;
 
-    if !output.stderr.is_empty() {
+    if !output.status.success() {
         return Err(CompilationError::CompilerError(
             String::from_utf8_lossy(output.stderr.as_slice()).to_string(),
         ));

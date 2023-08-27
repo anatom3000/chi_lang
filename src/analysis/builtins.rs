@@ -136,7 +136,6 @@ lazy_static! {
         num_type!(float;),
         num_type!(float32;),
         num_type!(float64;),
-        num_type!(float128;),
         num_type!(usize;),
         num_type!(isize; usize)
     ]);
@@ -154,10 +153,9 @@ lazy_static! {
         type_!(usize),
         type_!(isize),
     ];
-    static ref FLOATS: [Type; 4] = [
+    static ref FLOATS: [Type; 3] = [
         type_!(float),
         type_!(float32),
         type_!(float64),
-        type_!(float128),
     ];
 }

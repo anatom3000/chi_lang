@@ -364,7 +364,7 @@ impl<'a> ModuleTranspiler<'a> {
             match path[0].as_str() {
                 "int" => "int32_t".to_string(),
                 "uint" => "uint32_t".to_string(),
-                "float" => "_Float64".to_string(),
+                "float" => "double".to_string(),
                 "bool" => "_Bool".to_string(),
                 "char" => "char".to_string(),
 
@@ -377,9 +377,8 @@ impl<'a> ModuleTranspiler<'a> {
                 "int64" => "int64_t".to_string(),
                 "uint64" => "uint64_t".to_string(),
 
-                "float32" => "_Float32".to_string(),
-                "float64" => "_Float64".to_string(),
-                "float128" => "_Float128".to_string(),
+                "float32" => "float".to_string(),
+                "float64" => "double".to_string(),
 
                 "usize" => "size_t".to_string(),
                 "isize" => "ptrdiff_t".to_string(),
@@ -423,7 +422,6 @@ impl<'a> ModuleTranspiler<'a> {
 
                 "float32" => "f32".to_string(),
                 "float64" => "f64".to_string(),
-                "float128" => "f128".to_string(),
 
                 "usize" => "si".to_string(),
                 "isize" => "su".to_string(),

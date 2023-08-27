@@ -603,11 +603,10 @@ pub(crate) trait LocatedScope: Scope {
                 None => type_!(float),
                 Some(32) => type_!(float32),
                 Some(64) => type_!(float64),
-                Some(128) => type_!(float128),
                 Some(other) => {
                     return Err(AnalysisError::UnknownFloatSize {
                         found: *other,
-                        expected: &[32, 64, 128],
+                        expected: &[32, 64],
                     })
                 }
             },
