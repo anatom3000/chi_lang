@@ -29,8 +29,9 @@ macro_rules! analysis_error {
                 trace: std::backtrace::Backtrace::force_capture()
             },
         };
+        
         #[cfg(not(debug_assertions))]
-        let err = AnalysisErrorKind { kind };
+        let err = $crate::analysis::AnalysisError { kind };
         
         err
     }};
