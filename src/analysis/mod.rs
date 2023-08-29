@@ -494,6 +494,7 @@ impl ModuleScope {
     pub fn analyse(&mut self) -> Result<(), AnalysisError> {
         self.declaration_pass()?;
         self.declaration_typing_pass()?;
+        self.method_inheritance_pass()?;
         self.execution_pass()?;
 
         Ok(())
@@ -617,13 +618,7 @@ impl ModuleScope {
                     self.statements.push(Statement::StructDeclaration { name })
                 }
                 ast::Statement::Import { kind, visibility } => match kind {
-                    ast::Import::Absolute(path) => self.add_resource(
-                        path.last().expect("path is not empty").clone(), 
-                        Resource {
-                            kind: ResourceKind::Alias(path),
-                            visibility 
-                        }
-                    )?,
+                    ast::Import::Absolute(path) => self.add_alias(path, visibility)?,
                     ast::Import::Relative(name) => self.add_submodule(name, visibility)?,
                 },
                 other @ (ast::Statement::Expression(_)
@@ -644,16 +639,14 @@ impl ModuleScope {
     }
 
     pub(crate) fn declaration_typing_pass(&mut self) -> Result<(), AnalysisError> {
-        let unsafe_self = unsafe { &*(self as *const _) };
+        let unsafe_self = unsafe { &*(self as *const Self) };
+
 
         for res in self.resources.values_mut() {
             for r in res {
                 match &mut r.kind {
                     ResourceKind::Module(m) => {
                         m.declaration_typing_pass()?;
-                    },
-                    ResourceKind::Alias(path) => {
-                        GLOBAL_SCOPE.get_resource_no_methods(path)?;
                     },
                     ResourceKind::Function(head) | ResourceKind::Method(MethodHead { head, .. }) => {
                         for (_, ty) in head.arguments.iter_mut() {
@@ -666,7 +659,10 @@ impl ModuleScope {
                         for (_, ty) in members {
                             ty.analyse(unsafe_self)?;
                         }
-                    }
+                    },
+                    ResourceKind::Alias(path) => {
+                        GLOBAL_SCOPE.get_resource_no_methods(path)?;
+                    },
                     _ => {}
                 }
             }
@@ -695,6 +691,67 @@ impl ModuleScope {
         }
 
         self.declared_methods = declared_methods;
+
+        Ok(())
+    }
+
+    pub(crate) fn method_inheritance_pass(&mut self) -> Result<(), AnalysisError> {
+        let unsafe_self = unsafe { &*(self as *const Self) };
+        let mut inherited_methods = vec![];
+
+        for res in self.resources.values_mut() {
+            for r in res {
+                match &mut r.kind {
+                    ResourceKind::Module(m) => {
+                        m.method_inheritance_pass()?;
+                        for (name, res) in &m.resources {
+                            for r in res {
+                                if let ResourceKind::Method(meth) = &r.kind {
+                                    // only inherit locally defined methods
+                                    if meth.source == m.path {
+                                        inherited_methods.push((name.clone(), meth.clone()));
+                                    }
+                                }    
+                            }
+                        }
+                    },
+                    ResourceKind::Alias(path) => {
+                        let resources = GLOBAL_SCOPE.get_resource_no_methods(path).expect("aliases are validated in the declaration typing pass");
+
+                        if let Some(module) = unsafe_self.extract_module(&resources) {
+                            for (name, res) in &module.resources {
+                                for r in res {
+                                    if let ResourceKind::Method(meth) = &r.kind {
+                                        // only inherit locally defined methods
+                                        if &meth.source == path {
+                                            inherited_methods.push((name.clone(), meth.clone()));
+                                        }
+                                    }    
+                                }
+                            }
+                        }
+                    },
+
+                    _ => {}
+                }
+            }
+        }
+
+        for res in self.resources.values_mut() {
+            for r in res {
+                match &mut r.kind {
+                    _ => {}
+                }
+            }
+        }
+
+
+        for (name, head) in inherited_methods {
+            self.add_resource(name, Resource {
+                kind: ResourceKind::Method(head), 
+                visibility: Visibility::Module
+            }).expect("adding a method into scope never fails");
+        }
 
         Ok(())
     }
@@ -797,6 +854,16 @@ impl ModuleScope {
         self.add_resource(end, Resource { kind: ResourceKind::Module(submodule), visibility })?;
 
         Ok(())
+    }
+
+    fn add_alias(&mut self, path: Vec<String>, visibility: Visibility) -> Result<(), AnalysisError> {
+        self.add_resource(
+            path.last().expect("path is not empty").clone(), 
+            Resource {
+                kind: ResourceKind::Alias(path),
+                visibility 
+            }
+        )
     }
 
     // constructors

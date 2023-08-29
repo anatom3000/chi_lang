@@ -2,8 +2,7 @@ import modules.math.point
 import modules.math.point.Point
 import modules
 
-// does not compile:
-// import modules.math.notpoint.debug
+import modules.math.notpoint
 
 import .math
 import .utils
@@ -28,8 +27,10 @@ def main() {
     // method defined on &Point
     let tmp = origin.add(p)
 
-    // does not compile (yet)
-    // tmp.debug()
+    // debug is defined by `modules.math.notpoint`
+    // `import modules.math.notpoint` adds a method to the type
+    // if we try commenting the import this example will not compile
+    tmp.debug()
 
     // let diff = (origin).add(p)
 

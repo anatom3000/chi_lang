@@ -2,5 +2,5 @@ import modules.math.point
 import modules.utils.printf
 
 def (self: point.Point).debug() {
-    printf("(%f, %f)", self.x, self.y)
+    printf("`debug` method for `modules.math.point.Point` defined in `modules.math.notpoint` called! \n(%f, %f)\n", self.x, self.y)
 }
