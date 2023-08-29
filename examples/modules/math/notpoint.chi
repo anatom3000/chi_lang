@@ -1,0 +1,6 @@
+import modules.math.point
+import modules.utils.printf
+
+def (self: point.Point).debug() {
+    printf("(%f, %f)", self.x, self.y)
+}

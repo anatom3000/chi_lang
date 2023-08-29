@@ -40,10 +40,9 @@ impl<'a> ModuleTranspiler<'a> {
         }
 
         for (name, func) in &new.scope.declared_functions {
-            let mut args = func
-                .head
-                .arguments
-                .iter()
+            let head_args = func.head.arguments.iter().map(|(name, ty)| (name, ty.typed()));
+            
+            let mut args = head_args
                 .map(|(name, type_)| {
                     new.shadowed_variables.insert(name.clone(), 0);
                     new.transpile_declaration(type_, name)
@@ -64,7 +63,7 @@ impl<'a> ModuleTranspiler<'a> {
                 ) 
             };
             let declaration = new
-                .transpile_declaration(&func.head.return_type, &format!("{func_name}({args})"));
+                .transpile_declaration(func.head.return_type.typed(), &format!("{func_name}({args})"));
 
             let mut code = vec![];
             new.indent += 1;
@@ -79,12 +78,10 @@ impl<'a> ModuleTranspiler<'a> {
         }
 
         for (method, func) in &new.scope.declared_methods {
-            let receiver = func.head.arguments[0].1.clone();
+            let mut head_args = func.head.arguments.iter().map(|(name, ty)| (name, ty.typed())).peekable();
+            let receiver = head_args.peek().expect("methods have at least a receiver").1.clone();
 
-            let args = func
-                .head
-                .arguments
-                .iter()
+            let args = head_args
                 .map(|(name, type_)| {
                     new.shadowed_variables.insert(name.clone(), 0);
                     new.transpile_declaration(type_, name)
@@ -96,7 +93,7 @@ impl<'a> ModuleTranspiler<'a> {
 
             let name = new.mangle_method(&receiver, method, &new.scope.path, &func.head);
             let declaration = new
-                .transpile_declaration(&func.head.return_type, &format!("{name}({args})"));
+                .transpile_declaration(&func.head.return_type.typed(), &format!("{name}({args})"));
 
             let mut code = vec![];
             new.indent += 1;
@@ -125,7 +122,7 @@ impl<'a> ModuleTranspiler<'a> {
                     let mut body = vec![];
                     new.indent += 1;
                     for (m_name, m_type) in members {
-                        let decl = new.transpile_declaration(&m_type, &m_name);
+                        let decl = new.transpile_declaration(m_type.typed(), &m_name);
                         body.push(new.add_line(format!("{decl};")));
                     }
                     new.indent -= 1;
@@ -448,33 +445,33 @@ impl<'a> ModuleTranspiler<'a> {
     }
 
     fn mangle_method(&self, receiver: &Type, method: &String, impl_module: &Vec<String>, head: &FunctionHead) -> String {
-        let mut args;
-        if head.arguments.is_empty() {
-            args = "v".to_string();
-        } else {
-            args = String::with_capacity(head.arguments.len());
-            for (_, arg_type) in &head.arguments {
-                args.push_str(&self.mangle_type(arg_type))
-            }
+        let head_args = head.arguments.iter().map(|(name, ty)| (name, ty.typed())).peekable();
+        let mut args = String::with_capacity(head_args.len());
+        
+        for (_, arg_type) in head_args {
+            args.push_str(&self.mangle_type(arg_type))
         }
 
-        let return_type = self.mangle_type(&head.return_type);
+        let return_type = self.mangle_type(head.return_type.typed());
 
         format!("{}M{}{}{}{args}R{return_type}", Self::MANGLE_PREFIX, self.mangle_type(receiver), self.mangle_path(&impl_module), self.mangle_ident(method))
     }
 
     fn mangle_function(&self, path: &Vec<String>, head: &FunctionHead) -> String {
         let mut args;
-        if head.arguments.is_empty() {
+
+        let mut function_arguments = head.arguments.iter().map(|(name, ty)| (name, ty.typed())).peekable();
+
+        if function_arguments.peek().is_none() {
             args = "v".to_string();
         } else {
-            args = String::with_capacity(head.arguments.len());
-            for (_, arg_type) in &head.arguments {
+            args = String::with_capacity(function_arguments.len());
+            for (_, arg_type) in function_arguments {
                 args.push_str(&self.mangle_type(arg_type))
             }
         }
 
-        let return_type = self.mangle_type(&head.return_type);
+        let return_type = self.mangle_type(head.return_type.typed());
 
         format!("{}F{}{args}R{return_type}", Self::MANGLE_PREFIX, self.mangle_path(path))
     }

@@ -1,7 +1,7 @@
 use std::{cell::UnsafeCell, collections::HashMap, iter};
 use crate::{analysis::expression::{UnaryOperator, ExpressionData, BinaryOperator}, ast::{self, Literal}};
 
-use super::{ModuleScope, AnalysisError, expression::{Type, Expression, TypeDefinition, TypeKind, CoercionMethod}, FunctionScope};
+use super::{ModuleScope, AnalysisError, expression::{Type, Expression, TypeDefinition, TypeKind, CoercionMethod, MaybeTyped}, FunctionScope};
 
 pub(crate) trait Scope: Sized {
     // Required method
@@ -16,8 +16,10 @@ pub(crate) trait Scope: Sized {
 
         let mut path_iter = path.into_iter();
 
-        let mut resources = self.get_local_resource(path_iter.next().expect("resource path is not empty"))
-            .ok_or(AnalysisError::UnknownResource { path: path.into(), found: vec![] })?;
+        let local = path_iter.next().expect("resource path is not empty");
+
+        let mut resources = self.get_local_resource(local)
+            .ok_or(analysis_error!(NOERR UnknownResource { path: path.into(), found: vec![], failed_at: local.clone() }))?;
 
         for p in path_iter {
             if let Some(alias) = self.extract_alias(&resources) {
@@ -26,11 +28,11 @@ pub(crate) trait Scope: Sized {
             
             if let Some(submodule) = self.extract_module(&resources) {
                 resources = submodule.get_local_resource(p)
-                    .ok_or(AnalysisError::UnknownResource { path: path.into(), found: vec![] })?;
+                    .ok_or(analysis_error!(NOERR UnknownResource { path: path.into(), found: vec![], failed_at: p.clone() }))?;
             } else if let Some(type_) = self.extract_type(&resources) {
-                resources = type_.get_local_resource(p).ok_or(AnalysisError::UnknownResource { path: path.into(), found: vec![] })?;
+                resources = type_.get_local_resource(p).ok_or(analysis_error!(NOERR UnknownResource { path: path.into(), found: vec![], failed_at: p.clone() }))?;
             } else { // Functions, methods & variables do not have children
-                return Err(AnalysisError::UnknownResource { path: path.to_vec(), found: resources.into_iter().cloned().collect() })
+                return analysis_error!(UnknownResource { path: path.to_vec(), found: resources.into_iter().cloned().collect(), failed_at: p.clone() })
             }
         }
 
@@ -82,15 +84,13 @@ pub(crate) trait Scope: Sized {
     fn get_type(&self, path: &[String]) -> Result<&TypeDefinition, AnalysisError> {
         let resources = self.get_resource(path)?;
         
-        self.extract_type(&resources).ok_or(AnalysisError::UnknownResource { path: path.into(), found: resources.into_iter().cloned().collect() })
+        self.extract_type(&resources).ok_or(analysis_error!(NOERR UnknownResource { path: path.into(), found: resources.into_iter().cloned().collect(), failed_at: path.last().cloned().unwrap_or_default() }))
     }
 
     fn get_named_type(&self, type_: &Type) -> Result<&TypeDefinition, AnalysisError> {
         match type_ {
             Type::Path(path) => GLOBAL_SCOPE.get_type(path),
-            _ => Err(AnalysisError::NotAStruct {
-                found: type_.clone()
-            })
+            _ => analysis_error!(NotAStruct { found: type_.clone() })
         }
     }
 
@@ -128,7 +128,7 @@ pub(crate) trait Scope: Sized {
                     }
                 }
             },
-            None => return Err(AnalysisError::UnknownResource { path: path.into(), found: resources.into_iter().cloned().collect() })
+            None => return analysis_error!(UnknownResource { path: path.into(), found: resources.into_iter().cloned().collect(), failed_at: path.last().cloned().unwrap_or_default() })
         }
     }
     fn get_type_member(&self, instance: Expression, path: &[String]) -> Result<Expression, AnalysisError> {
@@ -144,7 +144,7 @@ pub(crate) trait Scope: Sized {
                             instance: Box::new(instance),
                             member: path[0].clone(),
                         },
-                        type_: member.clone(),
+                        type_: member.typed().clone(),
                     };
                     if path.len() == 1 {
                         Ok(instance)
@@ -152,12 +152,12 @@ pub(crate) trait Scope: Sized {
                         self.get_type_member(instance, &path[1..])
                     }
                 }
-                None => Err(AnalysisError::UnknownMember {
+                None => analysis_error!(UnknownMember {
                     instance_type: instance.type_.clone(),
                     member: path[0].clone(),
                 }),
             },
-            _ => Err(AnalysisError::MemberAccessOnNonStruct {
+            _ => analysis_error!(MemberAccessOnNonStruct {
                 instance_type: instance.type_.clone(),
                 member: path[0].clone(),
             }),
@@ -172,7 +172,7 @@ pub(crate) trait Scope: Sized {
     }
     fn get_method_head(&self, name: String) -> Result<Vec<&MethodHead>, AnalysisError> {
         Ok(self.extract_method_head(&self.get_local_resource(&name)
-            .ok_or(AnalysisError::UnknownResource { path: vec![name], found: vec![] })?
+            .ok_or(analysis_error!(NOERR UnknownResource { path: vec![name.clone()], found: vec![], failed_at: name }))?
         ))
     }
 
@@ -192,7 +192,7 @@ pub(crate) trait Scope: Sized {
     fn get_module(&self, path: &[String]) -> Result<&ModuleScope, AnalysisError> {
         let resources = self.get_resource(path)?;
         
-        self.extract_module(&resources).ok_or(AnalysisError::UnknownResource { path: path.into(), found: resources.into_iter().cloned().collect() })
+        self.extract_module(&resources).ok_or(analysis_error!(NOERR UnknownResource { path: path.into(), found: resources.into_iter().cloned().collect(), failed_at: path.last().cloned().unwrap_or_default() }))
     }
 
 }
@@ -215,7 +215,7 @@ pub(crate) trait LocatedScope: Scope {
 
         let start = path_iter.next().expect("resource path is not empty");
         let mut resources = self.get_local_resource(start)
-            .ok_or_else(|| AnalysisError::UnknownResource { path: path.clone(), found: vec![] })?;
+            .ok_or_else(|| analysis_error!(NOERR UnknownResource { path: path.clone(), found: vec![], failed_at: path.last().cloned().unwrap_or_default() }))?;
 
         absolute_path.push(start.clone());
 
@@ -242,12 +242,12 @@ pub(crate) trait LocatedScope: Scope {
 
             if let Some(submodule) = self.extract_module(&resources) {
                 resources = submodule.get_local_resource(&p)
-                    .ok_or_else(|| AnalysisError::UnknownResource { path: path.clone(), found: vec![] })?;
+                    .ok_or_else(|| analysis_error!(NOERR UnknownResource { path: path.clone(), found: vec![], failed_at: p.clone() }))?;
             } else if let Some(type_) = self.extract_type(&resources) {
                 resources = type_.get_local_resource(&p)
-                    .ok_or_else(|| AnalysisError::UnknownResource { path: path.clone(), found: vec![] })?;
+                    .ok_or_else(|| analysis_error!(NOERR UnknownResource { path: path.clone(), found: vec![], failed_at: p.clone() }))?;
             } else { // Functions and methods do not have children
-                return Err(AnalysisError::UnknownResource { path: path, found: resources.into_iter().cloned().collect() })
+                return analysis_error!(UnknownResource { path: path.clone(), found: resources.into_iter().cloned().collect(), failed_at: p.clone() })
             }
         }
 
@@ -284,7 +284,7 @@ pub(crate) trait LocatedScope: Scope {
                     TokenData::GreatorOrEqual => BinaryOperator::GreaterOrEqual,
                     TokenData::Lesser => BinaryOperator::Lesser,
                     TokenData::LesserOrEqual => BinaryOperator::LesserOrEqual,
-                    other => return Err(AnalysisError::UnknownBinaryOperator(other)),
+                    other => return analysis_error!(UnknownBinaryOperator(other)),
                 };
                 match (&left.type_, &right.type_) {
                     (Type::Path(ltype), Type::Path(rtype)) => {
@@ -314,7 +314,7 @@ pub(crate) trait LocatedScope: Scope {
                                         mutable: maybe_mutable
                                     },
                                     None => {
-                                        return Err(AnalysisError::UnsupportedBinaryOperation {
+                                        return analysis_error!(UnsupportedBinaryOperation {
                                             op: operator,
                                             left: left.type_,
                                             right: right.type_,
@@ -324,7 +324,7 @@ pub(crate) trait LocatedScope: Scope {
                             },
                         )
                     }
-                    (left, right) => Err(AnalysisError::UnsupportedBinaryOperation {
+                    (left, right) => analysis_error!(UnsupportedBinaryOperation {
                         op: operator,
                         left: left.clone(),
                         right: right.clone(),
@@ -342,7 +342,7 @@ pub(crate) trait LocatedScope: Scope {
                     TokenData::Ref => UnaryOperator::Ref,
                     TokenData::MutRef => UnaryOperator::MutRef,
                     TokenData::Star => UnaryOperator::Deref,
-                    other => return Err(AnalysisError::UnknownUnaryOperator(other)),
+                    other => return analysis_error!(UnknownUnaryOperator(other)),
                 };
 
                 match (argument.type_.clone(), operator) {
@@ -359,7 +359,7 @@ pub(crate) trait LocatedScope: Scope {
                     }),
                     (arg_type, UnaryOperator::MutRef) => {
                         if !argument.mutable {
-                            return Err(AnalysisError::MutRefOfImmutableValue { value: argument })
+                            return analysis_error!(MutRefOfImmutableValue { value: argument })
                         }
 
                         Ok(Expression {
@@ -385,7 +385,7 @@ pub(crate) trait LocatedScope: Scope {
                                 type_: ty.clone(),
                                 mutable: maybe_mutable
                             }),
-                            None => Err(AnalysisError::UnsupportedUnaryOperation {
+                            None => analysis_error!(UnsupportedUnaryOperation {
                                 op: operator,
                                 argument: Type::Path(path),
                             }),
@@ -399,9 +399,7 @@ pub(crate) trait LocatedScope: Scope {
                         type_: *inner,
                         mutable: maybe_mutable && mutable,
                     }),
-                    (argument, op) => {
-                        Err(AnalysisError::UnsupportedUnaryOperation { op, argument })
-                    }
+                    (argument, op) => analysis_error!(UnsupportedUnaryOperation { op, argument })
                 }
             }
             ast::Expression::ParenBlock(inner) => {
@@ -434,7 +432,7 @@ pub(crate) trait LocatedScope: Scope {
                                 function: path,
                                 arguments: coerced_args,
                             },
-                            type_: function.return_type.clone(),
+                            type_: function.return_type.typed().clone(),
                             mutable: maybe_mutable
                         })
                     },
@@ -464,10 +462,10 @@ pub(crate) trait LocatedScope: Scope {
                         // get the type of the member if it exists, otherwise return an error
                         let member_type = members
                             .get(&member)
-                            .ok_or(AnalysisError::UnknownMember {
+                            .ok_or(analysis_error!(NOERR UnknownMember {
                                 instance_type: instance.type_.clone(),
                                 member: member.clone(),
-                            })?
+                            }))?
                             .clone();
 
                         Ok(Expression {
@@ -476,7 +474,7 @@ pub(crate) trait LocatedScope: Scope {
                                 instance: Box::new(instance),
                                 member,
                             },
-                            type_: member_type,
+                            type_: member_type.typed().clone(),
                         })
                     }
                     _ => todo!("member access for reference types"),
@@ -485,51 +483,46 @@ pub(crate) trait LocatedScope: Scope {
             ast::Expression::StructInit { path, mut members } => {
                 let ty = self.get_type(&path)?;
                 let path = self.make_path_absolute(path)?;
-                match ty.kind.clone() {
-                    TypeKind::Struct {
-                        members: decl_members,
-                    } => {
-                        let mut typed_members = HashMap::new();
 
-                        for (m_name, m_type) in decl_members {
-                            let value = members
-                                .get(&m_name)
-                                .ok_or(AnalysisError::MissingMemberInInit {
-                                    struct_name: path.clone(),
-                                    missing: m_name.clone(),
-                                })?
-                                .clone();
+                let TypeKind::Struct { members: decl_members } = ty.kind.clone()
+                    else { return analysis_error!(NotAStruct { found: Type::Path(path) }) };
 
-                            // TODO: ownership
-                            members.remove(&m_name);
+                let mut typed_members = HashMap::new();
 
-                            typed_members.insert(
-                                m_name, 
-                                self.type_expression(value, maybe_mutable)?
-                                    .coerce_to_new(self, &m_type, false)?
-                            );
-                        }
+                for (m_name, m_type) in decl_members {
+                    let value = members
+                        .get(&m_name)
+                        .ok_or(analysis_error!(NOERR MissingMemberInInit {
+                            struct_name: path.clone(),
+                            missing: m_name.clone(),
+                        }))?
+                        .clone();
 
-                        if !members.is_empty() {
-                            return Err(AnalysisError::UnknownMember {
-                                instance_type: Type::Path(path),
-                                member: members.into_keys().next().expect("members is not empty"),
-                            });
-                        }
+                    // TODO: ownership
+                    members.remove(&m_name);
 
-                        Ok(Expression {
-                            data: ExpressionData::StructInit {
-                                path: path.clone(),
-                                members: typed_members,
-                            },
-                            type_: Type::Path(path.clone()),
-                            mutable: true
-                        })
-                    }
-                    _ => Err(AnalysisError::NotAStruct {
-                        found: Type::Path(path),
-                    }),
+                    typed_members.insert(
+                        m_name, 
+                        self.type_expression(value, maybe_mutable)?
+                            .coerce_to_new(self, m_type.typed(), false)?
+                    );
                 }
+
+                if !members.is_empty() {
+                    return analysis_error!(UnknownMember {
+                        instance_type: Type::Path(path),
+                        member: members.into_keys().next().expect("members is not empty"),
+                    });
+                }
+
+                Ok(Expression {
+                    data: ExpressionData::StructInit {
+                        path: path.clone(),
+                        members: typed_members,
+                    },
+                    type_: Type::Path(path.clone()),
+                    mutable: true
+                })
             }
             ast::Expression::Literal(lit) => self.type_literal(lit),
         }
@@ -593,7 +586,7 @@ pub(crate) trait LocatedScope: Scope {
                     }
                 }
                 Some(other) => {
-                    return Err(AnalysisError::UnknownIntegerSize {
+                    return analysis_error!(UnknownIntegerSize {
                         found: *other,
                         expected: &[8, 16, 32, 64],
                     })
@@ -604,7 +597,7 @@ pub(crate) trait LocatedScope: Scope {
                 Some(32) => type_!(float32),
                 Some(64) => type_!(float64),
                 Some(other) => {
-                    return Err(AnalysisError::UnknownFloatSize {
+                    return analysis_error!(UnknownFloatSize {
                         found: *other,
                         expected: &[32, 64],
                     })
@@ -658,7 +651,7 @@ pub(crate) trait LocatedScope: Scope {
     
 
         Ok(Expression {
-            type_: head.head.return_type.clone(),
+            type_: head.head.return_type.typed().clone(),
 
             data: ExpressionData::MethodCall {
                 head,
@@ -675,6 +668,9 @@ pub(crate) trait LocatedScope: Scope {
 
         let mut candidates = vec![];
         'overloaded_loop: for (id, function) in overloaded_functions.iter().enumerate() {
+            let func_args = function.arguments.iter()
+                .map(|(name, ty)| (name, ty.typed()) ).collect::<Vec<_>>();
+
             let mut coercions = vec![];
             if let Some(true) = function.is_variadic {
                 if function.arguments.len() > arg_n {
@@ -682,7 +678,9 @@ pub(crate) trait LocatedScope: Scope {
                 }
 
                 for (index, found) in typed_args.iter().enumerate() {
-                    match function.arguments.get(index) {
+
+
+                    match func_args.get(index) {
                         Some(expected) => {
                             let should_be_mutable = true;
 
@@ -704,7 +702,7 @@ pub(crate) trait LocatedScope: Scope {
                     continue;
                 }
 
-                for (expected, found) in std::iter::zip(&function.arguments, &typed_args) {
+                for (expected, found) in std::iter::zip(func_args, &typed_args) {
                     // TODO: ownership
                     let should_be_mutable = true;
 
@@ -722,9 +720,9 @@ pub(crate) trait LocatedScope: Scope {
         }
 
         let (id, function, coercions) = match candidates.len() {
-            0 => return Err(AnalysisError::InvalidArguments { 
+            0 => return analysis_error!(InvalidArguments { 
                 expected: overloaded_functions.into_iter().cloned()
-                    .map(|x| x.arguments.iter().cloned().map(|a| a.1).collect())
+                    .map(|x| x.arguments.iter().map(|(_, ty)| ty.typed()).cloned().collect())
                     .collect(), 
                 found: typed_args.into_iter().map(|x| x.type_).collect()
             }),
@@ -857,8 +855,8 @@ impl Scope for GlobalScope {
 
 #[derive(Clone, Debug)]
 pub struct FunctionHead {
-    pub(crate) return_type: Type,
-    pub(crate) arguments: Vec<(String, Type)>,
+    pub(crate) return_type: MaybeTyped,
+    pub(crate) arguments: Vec<(String, MaybeTyped)>,
     pub(crate) is_variadic: Option<bool>,
     pub(crate) no_mangle: bool
 }

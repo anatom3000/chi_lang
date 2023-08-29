@@ -52,8 +52,9 @@ pub enum Expression {
     Literal(Literal),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum Type {
+    #[default]
     Void,
     Path(Vec<String>),
     // Array {

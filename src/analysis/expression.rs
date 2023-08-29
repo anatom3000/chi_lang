@@ -1,8 +1,8 @@
-use std::{fmt::Display, collections::HashMap};
+use std::{fmt::Display, collections::HashMap, mem};
 
-use crate::ast::Literal;
+use crate::ast::{Literal, self};
 
-use super::{AnalysisError, resources::{Scope, VariableOrAttribute, Variable, FunctionHead, MethodHead}};
+use super::{AnalysisError, resources::{Scope, VariableOrAttribute, Variable, FunctionHead, MethodHead, LocatedScope}};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum BinaryOperator {
@@ -116,7 +116,7 @@ impl Expression {
                 VariableOrAttribute::Attribute(expr) => Ok(expr.type_),
                 VariableOrAttribute::Variable(Variable { type_, mutable }) => match mutable {
                     true => Ok(type_.clone()),
-                    false => Err(AnalysisError::WriteOnImmutableReference)
+                    false => analysis_error!(WriteOnImmutableReference)
                 },
             },
             ExpressionData::StructMember { instance, member } => {
@@ -126,13 +126,14 @@ impl Expression {
                 match instance_type.kind {
                     TypeKind::Struct { ref members } => Ok(members
                         .get(member as &str)
-                        .ok_or(AnalysisError::UnknownMember {
+                        .ok_or(analysis_error!(NOERR UnknownMember {
                             instance_type: instance.type_.clone(),
                             member: member.clone(),
-                        })?
+                        }))?
+                        .typed()
                         .clone()),
                     _ => {
-                        return Err(AnalysisError::MemberAccessOnNonStruct {
+                        return analysis_error!(MemberAccessOnNonStruct {
                             instance_type: instance.type_.clone(),
                             member: member.clone(),
                         })
@@ -146,7 +147,7 @@ impl Expression {
                 argument.type_lhs(scope)?;
                 Ok(self.type_.clone())
             }
-            _ => Err(AnalysisError::AssignmentOnValue {
+            _ => analysis_error!(AssignmentOnValue {
                 value: self.clone(),
             }),
         }
@@ -154,7 +155,7 @@ impl Expression {
 
     pub(crate) fn coerce_to_new<'a>(self, scope: &impl Scope, expected: &Type, allow_implicit_mutable_coercion: bool) -> Result<Expression, AnalysisError> {
         let method = self.type_.coerce_method(scope, expected)
-            .ok_or_else(|| AnalysisError::UnexpectedType { expected: expected.clone(), found: self.type_.clone() })?;
+            .ok_or_else(|| analysis_error!(NOERR UnexpectedType { expected: expected.clone(), found: self.type_.clone() }))?;
         
         method.apply(scope, self, allow_implicit_mutable_coercion)
     }
@@ -198,7 +199,7 @@ impl Type {
         match self {
             Type::Path(path) => &path[..path.len()-1],
             Type::Void => todo!("definition module for void type"),
-            Type::Reference { inner, mutable } => inner.definition_module()
+            Type::Reference { inner, mutable: _ } => inner.definition_module()
         }
     }
 }
@@ -230,6 +231,34 @@ impl std::fmt::Debug for Type {
 }
 
 #[derive(Debug, Clone)]
+pub enum MaybeTyped {
+    Untyped(ast::Type),
+    Typed(Type)
+}
+
+impl MaybeTyped {
+    pub fn typed(&self) -> &Type {
+        match self {
+            Self::Untyped(_) => panic!("expected typed arguments"),
+            Self::Typed(ty) => &ty
+        }
+    }
+
+    pub(crate) fn analyse(&mut self, scope: &impl LocatedScope) -> Result<(), AnalysisError> {
+        match self {
+            Self::Untyped(ty) => {
+                let ty = mem::take(ty);
+                *self = Self::Typed(scope.analyse_type(ty)?);
+                Ok(())
+            },
+            Self::Typed(_) => Ok(()),
+        }
+    }
+}
+
+
+
+#[derive(Debug, Clone)]
 pub(crate) enum CoercionMethod {
     None,
     Ref,
@@ -251,7 +280,7 @@ impl CoercionMethod {
             }),
             Self::MutRef => {
                 if !allow_implicit_mutable_coercion || !value.mutable {
-                    return Err(AnalysisError::ExpectedMutableValue { value })
+                    return analysis_error!(ExpectedMutableValue { value })
                 }
 
                 Ok(Expression {
@@ -269,10 +298,11 @@ impl CoercionMethod {
     }
 }
 
+
 #[derive(Debug, Clone)]
 pub enum TypeKind {
     Primitive,
-    Struct { members: HashMap<String, Type> },
+    Struct { members: HashMap<String, MaybeTyped> },
 }
 
 #[derive(Clone, Debug)]

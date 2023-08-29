@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::ffi::OsStr;
+use std::fmt::Debug;
 use std::path::PathBuf;
 use std::{fs, mem, vec, iter, ptr};
 
@@ -10,8 +11,37 @@ use crate::parser::ParserError;
 use crate::transpiler::ModuleTranspiler;
 use crate::{lexer, parser, TranspileError};
 
-use self::expression::{Expression, Type, TypeDefinition, TypeKind, UnaryOperator};
+use self::expression::{Expression, Type, TypeDefinition, TypeKind, UnaryOperator, MaybeTyped};
 use self::resources::{FunctionHead, Resource, Scope, LocatedScope, Visibility, Variable, GLOBAL_SCOPE, MethodHead};
+
+macro_rules! analysis_error {
+    (NOERR $err:expr) => {{
+        use $crate::analysis::AnalysisErrorKind::*;
+
+        let kind: $crate::analysis::AnalysisErrorKind = $err;
+
+        #[cfg(debug_assertions)]
+        let err = $crate::analysis::AnalysisError {
+            kind,
+            source: $crate::analysis::DebugSource {
+                file: file!(),
+                loc: (line!(), column!()),
+                trace: std::backtrace::Backtrace::force_capture()
+            },
+        };
+        #[cfg(not(debug_assertions))]
+        let err = AnalysisErrorKind { kind };
+        
+        err
+    }};
+    (PANIC $err:expr) => {{        
+        Err($crate::analysis::analysis_error!(NOERR $err)).unwrap()
+    }};
+    ($err:expr) => {{        
+        Err($crate::analysis::analysis_error!(NOERR $err))
+    }}
+}
+use analysis_error;
 
 
 #[macro_use]
@@ -21,12 +51,13 @@ pub(crate) mod expression;
 
 
 #[derive(Debug, Clone)]
-pub enum AnalysisError {
+pub enum AnalysisErrorKind {
     UnknownBinaryOperator(lexer::TokenData),
     UnknownUnaryOperator(lexer::TokenData),
     UnknownResource{
         path: Vec<String>,
         found: Vec<ResourceKind>,
+        failed_at: String,
     },
     UnsupportedBinaryOperation {
         op: BinaryOperator,
@@ -36,11 +67,6 @@ pub enum AnalysisError {
     UnsupportedUnaryOperation {
         op: UnaryOperator,
         argument: Type,
-    },
-    WrongArgumentCount {
-        function: Vec<String>,
-        expected: usize,
-        found: usize,
     },
     UnexpectedType {
         expected: Type,
@@ -69,10 +95,7 @@ pub enum AnalysisError {
         instance_type: Type,
         member: String,
     },
-    UnknownMethod {
-        instance_type: Type,
-        method: String
-    },
+    #[allow(unused)]
     DuplicateStructMember {
         struct_name: String,
         duplicated_member: String,
@@ -108,9 +131,6 @@ pub enum AnalysisError {
         recv: Type,
         name: String
     },
-    PrivateResource {
-        path: Vec<String>,
-    },
     NotAStruct {
         found: Type,
     },
@@ -118,6 +138,7 @@ pub enum AnalysisError {
         defined: FunctionHead,
         conflicting: FunctionHead
     },
+    #[allow(unused)]
     AmbiguousCall {
         candidates: Vec<FunctionHead>,
     },
@@ -127,14 +148,41 @@ pub enum AnalysisError {
     }
 }
 
+pub struct DebugSource {
+    loc: (u32, u32),
+    file: &'static str,
+    trace: std::backtrace::Backtrace
+}
+
+impl Debug for DebugSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "{}:{}:{}", self.file, self.loc.0, self.loc.1)?;
+        writeln!(f, "backtrace: ")?;
+        write ! (f, "{}", self.trace)
+    }
+}
+
+#[derive(Debug)]
+pub struct AnalysisError {
+    kind: AnalysisErrorKind,
+    #[cfg(debug_assertions)]
+    #[allow(unused)]
+    source: DebugSource
+}
+
+
+
 impl AnalysisError {
     fn with_member(self, member: String) -> Self {
-        match self {
-            AnalysisError::NotAStruct { found } => AnalysisError::MemberAccessOnNonStruct {
-                instance_type: found,
-                member: member,
+        match self.kind {
+            AnalysisErrorKind::NotAStruct { found } => Self {
+                kind: AnalysisErrorKind::MemberAccessOnNonStruct {
+                    instance_type: found,
+                    member: member,
+                },
+                ..self
             },
-            e => e
+            _ => self
         }
     }
 }
@@ -187,6 +235,27 @@ impl FunctionScope {
         }
     }
 
+    pub(crate) fn declaration_typing_pass(&mut self) -> Result<(), AnalysisError> {
+
+        // SAFETY: module is set by the caller
+        let module = unsafe { &*self.module };
+
+        for (_, ty) in self.head.arguments.iter_mut() {
+            ty.analyse(module)?;
+        }
+
+        self.head.return_type.analyse(module)?;
+
+        self.resources.extend(
+            self.head.arguments
+            .iter()
+            .cloned()
+            .map(|(name, type_)| (name, vec![ResourceKind::Variable(Variable { mutable: true, type_: type_.typed().clone() })]))
+        );
+
+        Ok(())
+    }
+
     fn execution_pass(&mut self) -> Result<(), AnalysisError> {
         let source = mem::take(&mut self.source);
 
@@ -218,7 +287,7 @@ impl FunctionScope {
                             // methods are not real resources, no disambiguation required
                             x.get_mut().push(resource);
                         } else {
-                            return Err(AnalysisError::ResourceShadowing { name: x.key().clone() })
+                            return analysis_error!(ResourceShadowing { name: x.key().clone() })
                         }
                     },
                     ResourceKind::Variable(var_to_insert) => {
@@ -230,7 +299,7 @@ impl FunctionScope {
                                 ResourceKind::Variable(old_var) => {
                                     mem::swap(old_var, var_to_insert)
                                 },
-                                _ => return Err(AnalysisError::ResourceShadowing { name: x.key().clone() })
+                                _ => return analysis_error!(ResourceShadowing { name: x.key().clone() })
                             }
                         }
                     }
@@ -242,13 +311,14 @@ impl FunctionScope {
 
                                         let is_similar = 
                                             iter::zip(&existing_head.arguments, &head.arguments)
+                                            .map(|((name1, ty1), (name2, ty2))| ((name1, ty1.typed()), (name2, ty2.typed())))
                                             .all(|((_, existing), (_, new))| 
                                                    existing.coerce_method(unsafe_self, new).is_some() 
                                                 || new.coerce_method(unsafe_self, existing).is_some()
                                             );
 
                                         if is_similar {
-                                            return Err(AnalysisError::AmbiguousOverloading {
+                                            return analysis_error!(AmbiguousOverloading {
                                                 defined: head.clone(),
                                                 conflicting: existing_head.clone()
                                             });
@@ -261,7 +331,7 @@ impl FunctionScope {
                                 ResourceKind::Alias     (_)
                                 | ResourceKind::Module  (_) 
                                 | ResourceKind::Variable(_) 
-                                    => return Err(AnalysisError::ResourceShadowing { name: x.key().clone() })
+                                    => return analysis_error!(ResourceShadowing { name: x.key().clone() })
                             }
                         }
                         x.get_mut().push(resource);
@@ -350,16 +420,18 @@ impl FunctionScope {
                 })
             }
             ast::Statement::Return(expr) => {
+                let head_return = self.head.return_type.typed();
+
                 let expr = match expr {
                     Some(expr) => {
                         Some(
                             self.type_expression(expr, false)?
-                                .coerce_to_new(self, &self.head.return_type, false)?
+                                .coerce_to_new(self, head_return, false)?
                         )
                     }
                     None => {
-                        if self.head.return_type != type_!(void) {
-                            return Err(AnalysisError::EmptyReturn)
+                        if head_return != &type_!(void) {
+                            return analysis_error!(EmptyReturn)
                         }
                         
                         None
@@ -372,7 +444,7 @@ impl FunctionScope {
             | ast::Statement::ExternFunctionDeclaration { .. }
             | ast::Statement::ExternBlock { .. }
             | ast::Statement::StructDeclaration { .. }
-            | ast::Statement::Import { .. }) => Err(AnalysisError::StatementInWrongContext {
+            | ast::Statement::Import { .. }) => analysis_error!(StatementInWrongContext {
                 statement: other,
                 found_context: "function body",
             }),
@@ -380,18 +452,18 @@ impl FunctionScope {
     }
 
     fn new(source: Vec<ast::Statement>, head: FunctionHead) -> Self {
-        let resources = HashMap::from_iter(
-            head.arguments
-            .iter()
-            .cloned()
-            .map(|(name, type_)| (name.clone(), vec![ResourceKind::Variable(Variable { mutable: true, type_ })]))
-        );
+        // let resources = HashMap::from_iter(
+        //     head.arguments
+        //     .iter()
+        //     .cloned()
+        //     .map(|(name, type_)| (name.clone(), vec![ResourceKind::Variable(Variable { mutable: true, type_ })]))
+        // );
 
         FunctionScope {
             head,
             source,
             statements: vec![],
-            resources,
+            resources: HashMap::new(),
             module: ptr::null_mut()
         }
     }
@@ -421,6 +493,7 @@ impl std::fmt::Debug for ModuleScope {
 impl ModuleScope {
     pub fn analyse(&mut self) -> Result<(), AnalysisError> {
         self.declaration_pass()?;
+        self.declaration_typing_pass()?;
         self.execution_pass()?;
 
         Ok(())
@@ -431,8 +504,8 @@ impl ModuleScope {
             match stmt {
                 ast::Statement::FunctionDeclaration {
                     kind,
-                    return_type,
-                    arguments,
+                    mut return_type,
+                    mut arguments,
                     body,
                     is_variadic,
                     visibility
@@ -441,36 +514,21 @@ impl ModuleScope {
                     match kind {
                         FunctionKind::Function(name) => {
                             if is_variadic {
-                                return Err(AnalysisError::NonExternVariadic { name });
+                                return analysis_error!(NonExternVariadic { name });
                             }
-        
-                            let mut typed_arguments = vec![];
-                            for (name, ty) in arguments {
-                                typed_arguments.push((name, self.analyse_type(ty)?))
-                            }
-        
-                            let mut return_type = self.analyse_type(return_type)?;
-
+                
                             let is_main = self.is_main && name == "main";
         
                             if is_main {
                                 // implicitly return int if function is main
-                                if return_type == type_!(void) {
-                                    return_type = type_!(int);
+                                if return_type == ast::Type::Void {
+                                    return_type = ast::Type::Path(vec!["int".to_string()]);
                                 }
-                                
-                                if return_type != type_!(int) {
-                                    return Err(AnalysisError::UnexpectedType {
-                                        expected: type_!(int),
-                                        found: return_type,
-                                    });
-                                }
-                                
                             }
                                     
                             let head: FunctionHead = FunctionHead {
-                                return_type,
-                                arguments: typed_arguments,
+                                return_type: MaybeTyped::Untyped(return_type),
+                                arguments: arguments.into_iter().map(|(name, ty)| (name, MaybeTyped::Untyped(ty))).collect(),
                                 is_variadic: None,
                                 no_mangle: is_main
                             };
@@ -481,23 +539,16 @@ impl ModuleScope {
                             self.declared_functions.push((name.clone(), func));
                         }
                         FunctionKind::Method { receiver: (recv_name, recv_type), name: method_name } => {
-                            let recv_type = self.analyse_type(recv_type)?;
-
                             if is_variadic {
-                                return Err(AnalysisError::NonExternVariadic { name: format!("({recv_type}).{method_name}") });
+                                return analysis_error!(NonExternVariadic { name: format!("({recv_type:?}).{method_name}") });
                             }
 
                             // a method is a function that takes its receiver as the first argument
-                            let mut typed_arguments = vec![(recv_name, recv_type.clone())];
-                            for (name, ty) in arguments {
-                                typed_arguments.push((name, self.analyse_type(ty)?))
-                            }
-
-                            let return_type = self.analyse_type(return_type)?;
+                            arguments.insert(0, (recv_name, recv_type));
 
                             let head = FunctionHead {
-                                return_type,
-                                arguments: typed_arguments,
+                                return_type: MaybeTyped::Untyped(return_type),
+                                arguments: arguments.into_iter().map(|(name, ty)| (name, MaybeTyped::Untyped(ty))).collect(),
                                 is_variadic: None,
                                 no_mangle: false
                             };
@@ -525,22 +576,14 @@ impl ModuleScope {
                                 is_variadic,
                                 visibility,
                             } => {
-
-                                let mut typed_arguments = vec![];
-                                for (name, ty) in arguments {
-                                    typed_arguments.push((name, self.analyse_type(ty)?))
-                                }
-
                                 let name = match kind {
                                     FunctionKind::Function(name) => name,
-                                    FunctionKind::Method { receiver: (_, recv), name } => return Err(AnalysisError::ExternMethod { recv: self.analyse_type(recv)?, name })
+                                    FunctionKind::Method { receiver: (_, recv), name } => return analysis_error!(ExternMethod { recv: self.analyse_type(recv)?, name })
                                 };
 
-                                let return_type = self.analyse_type(return_type)?;
-
                                 let func = FunctionHead {
-                                    return_type,
-                                    arguments: typed_arguments,
+                                    return_type: MaybeTyped::Untyped(return_type),
+                                    arguments: arguments.into_iter().map(|(name, ty)| (name, MaybeTyped::Untyped(ty))).collect(),
                                     is_variadic: Some(is_variadic),
                                     no_mangle: true
                                 };
@@ -556,24 +599,12 @@ impl ModuleScope {
                     self.externs.push(source)
                 }
                 ast::Statement::StructDeclaration { name, members, visibility } => {
-                    let mut typed_members = HashMap::new();
-                    for (m_name, m_type) in members {
-                        if typed_members.contains_key(&m_name) {
-                            return Err(AnalysisError::DuplicateStructMember {
-                                struct_name: name,
-                                duplicated_member: m_name,
-                            });
-                        }
-
-                        typed_members.insert(m_name, self.analyse_type(m_type)?);
-                    }
-
                     self.add_resource(
                         name.clone(),
                         Resource { 
                             kind: ResourceKind::Type(TypeDefinition {
-                                kind: TypeKind::Struct {
-                                    members: typed_members,
+                                kind: TypeKind::Struct {    
+                                    members: members.into_iter().map(|(name, ty)| (name, MaybeTyped::Untyped(ty))).collect(),
                                 },
                                 // TODO: operator overloading
                                 // (or at least provide a default internal implementation for `==`)
@@ -602,7 +633,7 @@ impl ModuleScope {
                 | ast::Statement::ExternFunctionDeclaration { .. }
                 | ast::Statement::LetAssignment { .. }
                 | ast::Statement::Assignment { .. }) => {
-                    return Err(AnalysisError::StatementInWrongContext {
+                    return analysis_error!(StatementInWrongContext {
                         statement: other,
                         found_context: "module",
                     })
@@ -612,15 +643,58 @@ impl ModuleScope {
         Ok(())
     }
 
-    fn add_submodule(&mut self, end: String, visibility: Visibility) -> Result<(), AnalysisError> {
-        let mut submodule = self.child(end.clone())?;
+    pub(crate) fn declaration_typing_pass(&mut self) -> Result<(), AnalysisError> {
+        let unsafe_self = unsafe { &*(self as *const _) };
 
-        submodule.declaration_pass()?;
+        for res in self.resources.values_mut() {
+            for r in res {
+                match &mut r.kind {
+                    ResourceKind::Module(m) => {
+                        m.declaration_typing_pass()?;
+                    },
+                    ResourceKind::Alias(path) => {
+                        GLOBAL_SCOPE.get_resource(path)?;
+                    },
+                    ResourceKind::Function(head) | ResourceKind::Method(MethodHead { head, .. }) => {
+                        for (_, ty) in head.arguments.iter_mut() {
+                            ty.analyse(unsafe_self)?;
+                        }
+                
+                        head.return_type.analyse(unsafe_self)?;
+                    },
+                    ResourceKind::Type(TypeDefinition { kind: TypeKind::Struct { members }, .. }) => {
+                        for (_, ty) in members {
+                            ty.analyse(unsafe_self)?;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
 
-        self.statements
-            .push(Statement::Import(end.clone()));
+        let mut declared_functions = mem::take(&mut self.declared_functions);
 
-        self.add_resource(end, Resource { kind: ResourceKind::Module(submodule), visibility })?;
+        for (_, func) in &mut declared_functions {
+            // SAFETY: func has exclusive access to self
+            func.module = self as *mut _;
+            func.declaration_typing_pass()?;
+            // set pointer to null to revoke access to self
+            func.module = ptr::null_mut();
+        }
+
+        self.declared_functions = declared_functions;
+
+        let mut declared_methods = mem::take(&mut self.declared_methods);
+
+        for (_, func) in &mut declared_methods {
+            // SAFETY: func has exclusive access to self
+            func.module = self as *mut _;
+            func.declaration_typing_pass()?;
+            // set pointer to null to revoke access to self
+            func.module = ptr::null_mut();
+        }
+
+        self.declared_methods = declared_methods;
 
         Ok(())
     }
@@ -656,9 +730,6 @@ impl ModuleScope {
                     ResourceKind::Module(m) => {
                         m.execution_pass()?;
                     },
-                    ResourceKind::Alias(path) => {
-                        GLOBAL_SCOPE.get_resource(path)?;
-                    },
                     _ => {}
                 }
             }
@@ -669,9 +740,6 @@ impl ModuleScope {
 
     fn add_resource(&mut self, at: String, resource: Resource) -> Result<(), AnalysisError> {
         use std::collections::hash_map::Entry;
-
-        // borrowing rules! (or does it?)
-        let unsafe_self = unsafe {&mut *(self as *mut _)};
 
         match self.resources.entry(at) {
             Entry::Vacant(x) => {
@@ -687,7 +755,7 @@ impl ModuleScope {
                             // methods are not real resources, no disambiguation required
                             x.get_mut().push(resource);
                         } else {
-                            return Err(AnalysisError::ResourceShadowing { name: x.key().clone() })
+                            return analysis_error!(ResourceShadowing { name: x.key().clone() })
                         }
                     },
                     ResourceKind::Function(head) => {
@@ -695,20 +763,7 @@ impl ModuleScope {
                             match &res.kind {
                                 ResourceKind::Function(existing_head) => {
                                     if existing_head.arguments.len() == head.arguments.len() {
-
-                                        let is_similar = 
-                                            iter::zip(&existing_head.arguments, &head.arguments)
-                                            .all(|((_, existing), (_, new))| 
-                                                   existing.coerce_method(unsafe_self, new).is_some() 
-                                                || new.coerce_method(unsafe_self, existing).is_some()
-                                            );
-
-                                        if is_similar {
-                                            return Err(AnalysisError::AmbiguousOverloading {
-                                                defined: head.clone(),
-                                                conflicting: existing_head.clone()
-                                            });
-                                        }
+                                        /* TODO: check conflicts */
                                     }
                                 },
                                 ResourceKind::Method(_) // methods are not real
@@ -717,7 +772,7 @@ impl ModuleScope {
                                 ResourceKind::Alias     (_)
                                 | ResourceKind::Module  (_) 
                                 | ResourceKind::Variable(_) 
-                                    => return Err(AnalysisError::ResourceShadowing { name: x.key().clone() })
+                                    => return analysis_error!(ResourceShadowing { name: x.key().clone() })
                             }
                         }
                         x.get_mut().push(resource);
@@ -731,6 +786,20 @@ impl ModuleScope {
         Ok(())
     }
 
+    fn add_submodule(&mut self, end: String, visibility: Visibility) -> Result<(), AnalysisError> {
+        let mut submodule = self.child(end.clone())?;
+
+        submodule.declaration_pass()?;
+
+        self.statements
+            .push(Statement::Import(end.clone()));
+
+        self.add_resource(end, Resource { kind: ResourceKind::Module(submodule), visibility })?;
+
+        Ok(())
+    }
+
+    // constructors
     pub fn main(root: PathBuf) -> Result<String, TranspileError> {
         let mut root = root
             .canonicalize()
@@ -783,7 +852,7 @@ impl ModuleScope {
             && file.parent().unwrap().file_name().unwrap()
                 != file.file_stem().expect("module file have a stem")
         {
-            return Err(AnalysisError::RootModuleFileOutside {
+            return analysis_error!(RootModuleFileOutside {
                 path: path,
                 file: file,
             });
@@ -806,7 +875,7 @@ impl ModuleScope {
 
         // module file resolution
         let file = if single_exists && multiple_exists {
-            return Err(AnalysisError::DuplicateModuleFile {
+            return analysis_error!(DuplicateModuleFile {
                 path: path,
                 files: (single_file_module, multiple_files_module_root),
             });
@@ -815,12 +884,12 @@ impl ModuleScope {
         } else if multiple_exists {
             multiple_files_module_root
         } else {
-            return Err(AnalysisError::UnknownResource { path: path.clone(), found: vec![] })
+            return analysis_error!(UnknownResource { path: path.clone(), found: vec![], failed_at: end })
         };
 
         let source = parser::Parser::from_source(&fs::read_to_string(&file).unwrap())
             .parse()
-            .map_err(|e| AnalysisError::ParserError(e))?;
+            .map_err(|e| analysis_error!(NOERR ParserError(e)))?;
 
         Ok(ModuleScope {
             file,
@@ -835,6 +904,7 @@ impl ModuleScope {
         })
     }
 
+    // post-analysis utilities
     pub fn transpile(&mut self, target_file: PathBuf) -> Result<(), TranspileError> {
         let transpiled = ModuleTranspiler::transpile(self);
 
