@@ -34,7 +34,7 @@ macro_rules! analysis_error {
         
         err
     }};
-    (PANIC $err:expr) => {{        
+    (PANIC $err:expr) => {{
         Err($crate::analysis::analysis_error!(NOERR $err)).unwrap()
     }};
     ($err:expr) => {{        
@@ -653,7 +653,7 @@ impl ModuleScope {
                         m.declaration_typing_pass()?;
                     },
                     ResourceKind::Alias(path) => {
-                        GLOBAL_SCOPE.get_resource(path)?;
+                        GLOBAL_SCOPE.get_resource_no_methods(path)?;
                     },
                     ResourceKind::Function(head) | ResourceKind::Method(MethodHead { head, .. }) => {
                         for (_, ty) in head.arguments.iter_mut() {
