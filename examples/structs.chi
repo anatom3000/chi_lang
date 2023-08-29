@@ -23,8 +23,9 @@ def (self: Point).add(other: float) -> Point {
 }
 
 def (self: !Point).add_in_place(other: Point) {
-    (*self).x = (*self).x + other.x
-    (*self).y = (*self).y + other.y
+    // members can be accessed using `.` through references as well (no `->` operator)
+    self.x = self.x + other.x
+    self.y = self.y + other.y
 }
 
 struct Line {

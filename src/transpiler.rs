@@ -245,7 +245,7 @@ impl<'a> ModuleTranspiler<'a> {
         match expr {
             ExpressionData::Binary { left, operator, right, } => {
                 format!(
-                    "{} {operator} {}",
+                    "({} {operator} {})",
                     self.transpile_expression(&left.data),
                     self.transpile_expression(&right.data)
                 )
@@ -289,7 +289,7 @@ impl<'a> ModuleTranspiler<'a> {
                 format!("({})", self.transpile_expression(&inner.data))
             }
             ExpressionData::Unary { operator, argument } => {
-                format!("{operator}{}", self.transpile_expression(&argument.data))
+                format!("({operator}{})", self.transpile_expression(&argument.data))
             }
             ExpressionData::Variable(path) => {
                 if path.len() == 1 {
@@ -311,14 +311,14 @@ impl<'a> ModuleTranspiler<'a> {
                     .collect::<Vec<_>>()
                     .join(", ");
 
-                format!("({}) {{ {members} }}", self.transpile_named_type(&path))
+                format!("(({}) {{ {members} }})", self.transpile_named_type(&path))
             }
         }
     }
 
     fn transpile_declaration(&mut self, type_: &Type, variable: &String) -> String {
         match type_ {
-            Type::Void => format!("void {variable}",),
+            Type::Void => format!("void {variable}",), // cursed void variable but i'll fix it later
             Type::Path(path) if path[0] == "str" => {
                 // hack until a real string type is implemented
                 format!("char *{variable}")

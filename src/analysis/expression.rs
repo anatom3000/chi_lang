@@ -191,6 +191,12 @@ impl Type {
                     then:  Box::new(if *mutable {CoercionMethod::MutRef} else {CoercionMethod::Ref})
                 })
             },
+            (expected, Type::Reference { inner, .. }) => {
+                Some(CoercionMethod::Nested {
+                    inner: Box::new(inner.coerce_method(scope, expected)?),
+                    then: Box::new(CoercionMethod::Deref)
+                })
+            }
             _ => None,
         }
     }
@@ -263,6 +269,7 @@ pub(crate) enum CoercionMethod {
     None,
     Ref,
     MutRef,
+    Deref,
     Nested {
         inner: Box<CoercionMethod>,
         then: Box<CoercionMethod>
@@ -289,6 +296,25 @@ impl CoercionMethod {
                     mutable: true,
                 })
             },
+            Self::Deref => {
+                match value.type_.clone() {
+                    Type::Reference { inner, mutable } => {
+                        Ok(
+                            Expression {
+                                data: ExpressionData::Unary {
+                                    operator: UnaryOperator::Deref,
+                                    argument: Box::new(value),
+                                },
+                                type_: *inner,
+                                mutable,
+                            }
+                        )
+                    },
+                    other => return analysis_error!(UnsupportedUnaryOperation { op: UnaryOperator::Deref, argument: other.clone() })
+                }
+
+                
+            }
             Self::Nested { inner, then } => {
                 let value = inner.apply(scope, value, allow_implicit_mutable_coercion)?;
                 let value = then.apply(scope, value, allow_implicit_mutable_coercion)?;

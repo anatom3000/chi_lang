@@ -85,7 +85,7 @@ pub(crate) trait Scope: Sized {
                         type_: type_.clone(),
                         mutable: *mutable
                     },
-                    VariableOrAttribute::Attribute(expr) => expr,
+                    VariableOrAttribute::Attribute(instance) => instance,
                 };
                 
                 Ok(FunctionsOrMethod::Method {
@@ -155,37 +155,13 @@ pub(crate) trait Scope: Sized {
             None => return analysis_error!(UnknownResource { path: path.into(), found: resources.into_iter().cloned().collect(), failed_at: path.last().cloned().unwrap_or_default() })
         }
     }
-    fn get_type_member(&self, instance: Expression, path: &[String]) -> Result<Expression, AnalysisError> {
-        let typedef = self.get_named_type(&instance.type_)
-            .map_err(|e| e.with_member(path[0].clone()))?;
-
-        match &typedef.kind {
-            TypeKind::Struct { members } => match members.get(&path[0]) {
-                Some(member) => {
-                    let instance = Expression {
-                        mutable: instance.mutable,
-                        data: ExpressionData::StructMember {
-                            instance: Box::new(instance),
-                            member: path[0].clone(),
-                        },
-                        type_: member.typed().clone(),
-                    };
-                    if path.len() == 1 {
-                        Ok(instance)
-                    } else {
-                        self.get_type_member(instance, &path[1..])
-                    }
-                }
-                None => analysis_error!(UnknownMember {
-                    instance_type: instance.type_.clone(),
-                    member: path[0].clone(),
-                }),
-            },
-            _ => analysis_error!(MemberAccessOnNonStruct {
-                instance_type: instance.type_.clone(),
-                member: path[0].clone(),
-            }),
+    fn get_type_member(&self, mut instance: Expression, path: &[String]) -> Result<Expression, AnalysisError> {
+        
+        for p in path {
+            instance = self.type_member_access(instance, p.clone())?;
         }
+
+        Ok(instance)
     }
 
     fn extract_method_head<'a>(&self, resources: &Vec<&'a ResourceKind>) -> Option<Vec<&'a MethodHead>> {
@@ -228,6 +204,45 @@ pub(crate) trait Scope: Sized {
         
         self.extract_module(&resources).ok_or(analysis_error!(NOERR UnknownResource { path: path.into(), found: resources.into_iter().cloned().collect(), failed_at: path.last().cloned().unwrap_or_default() }))
     }
+
+    fn type_member_access(&self, instance: Expression, member: String) -> Result<Expression, AnalysisError> {
+        match &instance.type_ {
+            Type::Void => analysis_error!(NotAStruct { found: Type::Void }),
+            Type::Path(path) => {
+                match GLOBAL_SCOPE.get_type(&path)
+                        .map_err(|e| e.with_member(member.clone()))?.kind.clone() {
+                    TypeKind::Struct { members } => {
+                        // get the type of the member if it exists, otherwise return an error
+                        let member_type = members
+                            .get(&member)
+                            .ok_or(analysis_error!(NOERR UnknownMember {
+                                instance_type: Type::Path(path.clone()),
+                                member: member.clone(),
+                            }))?
+                            .clone();
+
+                        Ok(Expression {
+                            mutable: instance.mutable,
+                            data: ExpressionData::StructMember {
+                                instance: Box::new(instance),
+                                member,
+                            },
+                            type_: member_type.typed().clone(),
+                        })
+                    }
+                    TypeKind::Primitive => analysis_error!(NotAStruct { found: Type::Path(path.clone()) }),
+                }
+            },
+            Type::Reference { .. } => {
+                let instance = CoercionMethod::Deref.apply(self, instance, true)?;
+
+                self.type_member_access(instance, member)
+            }
+        }
+
+    }
+
+
 
 }
 
@@ -489,30 +504,7 @@ pub(crate) trait LocatedScope: Scope {
             }),
             ast::Expression::StructMember { instance, member } => {
                 let instance = self.type_expression(*instance, maybe_mutable)?;
-
-                match self.get_named_type(&instance.type_)
-                        .map_err(|e| e.with_member(member.clone()))?.kind.clone() {
-                    TypeKind::Struct { members } => {
-                        // get the type of the member if it exists, otherwise return an error
-                        let member_type = members
-                            .get(&member)
-                            .ok_or(analysis_error!(NOERR UnknownMember {
-                                instance_type: instance.type_.clone(),
-                                member: member.clone(),
-                            }))?
-                            .clone();
-
-                        Ok(Expression {
-                            mutable: instance.mutable,
-                            data: ExpressionData::StructMember {
-                                instance: Box::new(instance),
-                                member,
-                            },
-                            type_: member_type.typed().clone(),
-                        })
-                    }
-                    _ => todo!("member access for reference types"),
-                }
+                self.type_member_access(instance, member)
             }
             ast::Expression::StructInit { path, mut members } => {
                 let ty = self.get_type(&path)?;
