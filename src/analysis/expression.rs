@@ -201,9 +201,10 @@ impl Type {
         }
     }
 
-    pub(crate) fn definition_module(&self) -> &[String] {
+    pub(crate) fn definition_module(&self) -> Option<&[String]> {
         match self {
-            Type::Path(path) => &path[..path.len()-1],
+            Type::Path(path) if path.len() == 1 => None,
+            Type::Path(path) => Some(&path[..path.len()-1]),
             Type::Void => todo!("definition module for void type"),
             Type::Reference { inner, mutable: _ } => inner.definition_module()
         }

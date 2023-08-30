@@ -68,5 +68,4 @@ def main() {
     }
 
     printf("The line starts at (%f, %f), ends at (%f, %f).\n", unit.start.x, unit.start.y, unit.end.x, unit.end.y)
-
 }

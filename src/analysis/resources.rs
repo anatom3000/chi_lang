@@ -650,12 +650,12 @@ pub(crate) trait LocatedScope: Scope {
             typed_args.push(self.type_expression(arg, true)?)
         }
 
-        let definition_module = GLOBAL_SCOPE.get_module(
-            typed_args[0].type_.definition_module()
-        ).expect("definition module of receiver type exists");
+        let definition_module = typed_args[0].type_.definition_module()
+            .map(|x| GLOBAL_SCOPE.get_module(x)
+                .expect("definition module of receiver type exists"));
 
 
-        let intrinsic_overloaded_methods = definition_module.get_method_head(method.clone());
+        let intrinsic_overloaded_methods = definition_module.map(|x| x.get_method_head(method.clone()));
 
         let (head, coerced_args) = match self.select_overload(&overloaded_heads, typed_args.clone(), true) {
             Ok(x) => {
@@ -664,7 +664,11 @@ pub(crate) trait LocatedScope: Scope {
 
                 (head, coerced_args)
             },
-            Err(_) => {
+            Err(e) => {
+                let Some(intrinsic_overloaded_methods) = intrinsic_overloaded_methods else {
+                    return Err(e)
+                };
+
                 let intrinsic_overloaded_methods = intrinsic_overloaded_methods?;
 
                 let intrinsic_overloaded_heads = intrinsic_overloaded_methods.iter().map(|x| &x.head).collect::<Vec<_>>();

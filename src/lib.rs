@@ -120,4 +120,6 @@ mod tests {
     test_program!(test_shadowing: "examples/shadowing.chi");
     test_program!(test_structs: "examples/structs.chi");
     test_program!(test_modules: "examples/modules/modules.chi");
+    test_program!(test_helloworld: "examples/helloworld.chi");
+    test_program!(test_methods: "examples/methods.chi");
 }

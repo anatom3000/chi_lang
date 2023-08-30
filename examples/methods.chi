@@ -1,0 +1,15 @@
+extern "<stdio.h>" {
+    def printf(fmt_str: str, ...)
+}
+
+def (x: int).abs() -> int {
+    if x < 0 {
+        return -x
+    } else {
+        return x
+    }
+}
+
+def main() {
+    printf("abs(-9) = %i\n", (-9).abs())
+}
