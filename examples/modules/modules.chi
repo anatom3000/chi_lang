@@ -2,8 +2,6 @@ import modules.math.point
 import modules.math.point.Point
 import modules
 
-import modules.math.notpoint
-
 import .math
 import .utils
 

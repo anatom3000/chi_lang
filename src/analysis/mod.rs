@@ -150,6 +150,10 @@ pub enum AnalysisErrorKind {
     InvalidArguments {
         expected: Vec<Vec<Type>>,
         found: Vec<Type>
+    },
+    NonLocalMethodDefinition {
+        recv_type: Type,
+        name: String
     }
 }
 
@@ -517,10 +521,6 @@ impl ModuleScope {
                     is_variadic,
                     visibility
                 } => {
-                    if generics.len() != 0 {
-                        todo!("generics!")
-                    }
-
                     match kind {
                         FunctionKind::Function(name) => {
                             if is_variadic {
@@ -537,6 +537,7 @@ impl ModuleScope {
                             }
                                     
                             let head: FunctionHead = FunctionHead {
+                                generics,
                                 return_type: MaybeTyped::Untyped(return_type),
                                 arguments: arguments.into_iter().map(|(name, ty)| (name, MaybeTyped::Untyped(ty))).collect(),
                                 is_variadic: None,
@@ -557,6 +558,7 @@ impl ModuleScope {
                             arguments.insert(0, (recv_name, recv_type));
 
                             let head = FunctionHead {
+                                generics,
                                 return_type: MaybeTyped::Untyped(return_type),
                                 arguments: arguments.into_iter().map(|(name, ty)| (name, MaybeTyped::Untyped(ty))).collect(),
                                 is_variadic: None,
@@ -597,6 +599,7 @@ impl ModuleScope {
                                 }
 
                                 let func = FunctionHead {
+                                    generics: vec![],
                                     return_type: MaybeTyped::Untyped(return_type),
                                     arguments: arguments.into_iter().map(|(name, ty)| (name, MaybeTyped::Untyped(ty))).collect(),
                                     is_variadic: Some(is_variadic),
@@ -696,12 +699,19 @@ impl ModuleScope {
 
         let mut declared_methods = mem::take(&mut self.declared_methods);
 
-        for (_, func) in &mut declared_methods {
+        for (name, func) in &mut declared_methods {
             // SAFETY: func has exclusive access to self
             func.module = self as *mut _;
             func.declaration_typing_pass()?;
             // set pointer to null to revoke access to self
             func.module = ptr::null_mut();
+
+            let recv_type = func.head.arguments[0].1.typed();
+            if let Some(path) = recv_type.definition_module() {
+                if path != &self.path {
+                    return analysis_error!(NonLocalMethodDefinition { recv_type: recv_type.clone(), name: name.clone() })
+                }
+            }
         }
 
         self.declared_methods = declared_methods;

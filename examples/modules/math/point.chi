@@ -1,3 +1,5 @@
+import modules.utils.printf
+
 struct Point {
     x: float,
     y: float,
@@ -8,4 +10,8 @@ def (self: Point).add(other: Point) -> Point {
         x: self.x + other.x,
         y: self.y + other.y,
     }
+}
+
+def (self: Point).debug() {
+    printf("(%f, %f)\n", self.x, self.y)
 }

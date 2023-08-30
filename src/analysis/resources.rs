@@ -1,5 +1,5 @@
 use std::{cell::UnsafeCell, collections::HashMap, iter};
-use crate::{analysis::expression::{UnaryOperator, ExpressionData, BinaryOperator}, ast::{self, Literal}};
+use crate::{analysis::expression::{UnaryOperator, ExpressionData, BinaryOperator}, ast::{self, Literal, GenericParam}};
 
 use super::{ModuleScope, AnalysisError, expression::{Type, Expression, TypeDefinition, TypeKind, CoercionMethod, MaybeTyped}, FunctionScope};
 
@@ -78,7 +78,11 @@ pub(crate) trait Scope: Sized {
                     )
                 )
             },
-            Err(_) => {
+            Err(e) => {
+                if path.len() == 1 {
+                    return Err(e);
+                }
+
                 let instance = match self.get_variable(&path[..path.len()-1])? {
                     VariableOrAttribute::Variable(Variable { type_, mutable }) => Expression {
                         data: ExpressionData::Variable(path[..path.len()-1].into()),
@@ -242,8 +246,9 @@ pub(crate) trait Scope: Sized {
 
     }
 
-
-
+    fn concretize_function(&mut self, path: &[String], ty_args: Vec<Type>) {
+        todo!("{:?} {:?}", path, ty_args)
+    }
 }
 
 pub(crate) trait LocatedScope: Scope {
@@ -882,12 +887,13 @@ impl Scope for GlobalScope {
             p.get_res(child)
             .map(|m| vec![m])
             .map(|x| x.into_iter().map(|y| unsafe { &*(y as *const _) }).collect()) // lifetimes!
-    )
+        )
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct FunctionHead {
+    pub(crate) generics: Vec<GenericParam>,
     pub(crate) return_type: MaybeTyped,
     pub(crate) arguments: Vec<(String, MaybeTyped)>,
     pub(crate) is_variadic: Option<bool>,
