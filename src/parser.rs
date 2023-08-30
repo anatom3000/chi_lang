@@ -3,7 +3,7 @@ use std::fmt::Display;
 use std::vec;
 
 use crate::analysis::resources::Visibility;
-use crate::ast::{self, Expression, Import, Literal, Statement, Type, FunctionKind};
+use crate::ast::{self, Expression, Import, Literal, Statement, Type, FunctionKind, GenericParam};
 use crate::lexer::{self, Token, TokenData};
 
 #[derive(Debug, Clone)]
@@ -576,7 +576,7 @@ impl Parser {
     }
 
     fn def_stmt(&mut self, visibility: Visibility) -> Option<Statement> {
-        let (kind, arguments, return_type, is_variadic) = self.function_head()?;
+        let (generics, kind, arguments, return_type, is_variadic) = self.function_head()?;
 
         match self.current_token() {
             Some(TokenData::LeftBrace) => self.current += 1,
@@ -585,6 +585,7 @@ impl Parser {
         let body = self.function_body()?;
 
         Some(Statement::FunctionDeclaration {
+            generics,
             visibility,
             kind,
             return_type,
@@ -595,9 +596,10 @@ impl Parser {
     }
 
     fn extern_def_stmt(&mut self, visibility: Visibility) -> Option<Statement> {
-        let (kind, arguments, return_type, is_variadic) = self.function_head()?;
+        let (generics, kind, arguments, return_type, is_variadic) = self.function_head()?;
 
         Some(Statement::ExternFunctionDeclaration {
+            generics,
             kind,
             arguments,
             return_type,
@@ -752,7 +754,36 @@ impl Parser {
         }
     }
 
-    fn function_head(&mut self) -> Option<(FunctionKind, Vec<(String, Type)>, Type, bool)> {
+    fn function_head(&mut self) -> Option<(Vec<GenericParam>, FunctionKind, Vec<(String, Type)>, Type, bool)> {
+        
+        let mut generics = vec![];
+        if let Some(TokenData::Lesser) = self.current_token() {
+            self.current += 1;
+            loop {
+                match self.current_token() {
+                    Some(TokenData::Greater) => {
+                        self.current += 1;
+                        break
+                    },
+                    Some(TokenData::Identifier(name)) => {
+                        generics.push(GenericParam { name });
+                        self.current += 1;
+                        match self.current_token() {
+                            Some(TokenData::Comma) => {
+                                self.current += 1;
+                            },
+                            Some(TokenData::Greater) => {
+                                self.current += 1;
+                                break;
+                            },
+                            _ => expected!(self, "`>` or `,`"),
+                        }
+                    },
+                    _ => expected!(self, "`>` or identifier")
+                }
+            }
+        }
+
         let kind = match self.current_token() {
             Some(TokenData::Identifier(name)) => {
                 self.current += 1;
@@ -783,7 +814,7 @@ impl Parser {
 
         let (args, return_type, is_variadic) = self.function_head_end()?;
 
-        Some((kind, args, return_type, is_variadic))
+        Some((generics, kind, args, return_type, is_variadic))
     }
 
     fn function_body(&mut self) -> Option<Vec<Statement>> {

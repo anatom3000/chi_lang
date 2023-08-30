@@ -81,6 +81,11 @@ pub enum FunctionKind {
 }
 
 #[derive(Debug, Clone)]
+pub struct GenericParam {
+    pub name: String,
+}
+
+#[derive(Debug, Clone)]
 pub enum Statement {
     Expression(Expression),
     LetAssignment {
@@ -92,6 +97,7 @@ pub enum Statement {
         rhs: Expression,
     },
     FunctionDeclaration {
+        generics: Vec<GenericParam>,
         visibility: Visibility,
         kind: FunctionKind,
         arguments: Vec<(String, Type)>,
@@ -109,6 +115,7 @@ pub enum Statement {
         members: HashMap<String, Type>,
     },
     ExternFunctionDeclaration {
+        generics: Vec<GenericParam>, // generics on extern functions are syntactically correct but rejected by analysis
         kind: FunctionKind,
         arguments: Vec<(String, Type)>,
         return_type: Type,

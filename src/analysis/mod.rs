@@ -132,6 +132,10 @@ pub enum AnalysisErrorKind {
         recv: Type,
         name: String
     },
+    ExternGenerics {
+        name: String,
+        generics: Vec<ast::GenericParam>,
+    },
     NotAStruct {
         found: Type,
     },
@@ -505,6 +509,7 @@ impl ModuleScope {
         for stmt in self.source.clone() {
             match stmt {
                 ast::Statement::FunctionDeclaration {
+                    generics,
                     kind,
                     mut return_type,
                     mut arguments,
@@ -512,6 +517,9 @@ impl ModuleScope {
                     is_variadic,
                     visibility
                 } => {
+                    if generics.len() != 0 {
+                        todo!("generics!")
+                    }
 
                     match kind {
                         FunctionKind::Function(name) => {
@@ -572,6 +580,7 @@ impl ModuleScope {
                     for stmt in body {
                         match stmt {
                             ast::Statement::ExternFunctionDeclaration {
+                                generics,
                                 kind,
                                 arguments,
                                 return_type,
@@ -582,6 +591,10 @@ impl ModuleScope {
                                     FunctionKind::Function(name) => name,
                                     FunctionKind::Method { receiver: (_, recv), name } => return analysis_error!(ExternMethod { recv: self.analyse_type(recv)?, name })
                                 };
+
+                                if generics.len() != 0 {
+                                    return analysis_error!(ExternGenerics { name, generics })
+                                }
 
                                 let func = FunctionHead {
                                     return_type: MaybeTyped::Untyped(return_type),
